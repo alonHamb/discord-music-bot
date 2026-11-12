@@ -43,6 +43,17 @@ function Quiet([scriptblock]$command) {  # run a native command; $true if it suc
     $LASTEXITCODE -eq 0
 }
 function VersionKey($v) { $p = $v -split '\.'; [int]$p[0] * 1000000 + [int]$p[1] * 1000 + [int]$p[2] }
+function Remove-OlderInstallers($dist, [string[]]$keep) {
+    # Like build.ps1: older versions' installers in dist are deleted once you confirm (Enter = yes).
+    $older = @(Get-ChildItem $dist -File | Where-Object {
+        ($_.Name -like 'discord-music-bot-*-windows-setup.exe' -or $_.Name -like 'discord-music-bot_*_all.deb') -and $_.Name -notin $keep })
+    if (-not $older) { return }
+    Write-Host "`nOlder installers in dist:"
+    $older | ForEach-Object { Write-Host "  $($_.Name)" }
+    if ("$(Read-Host 'Delete them? [Y/n]')".Trim() -match '^(n|no)$') { Write-Host 'Kept them.'; return }
+    $older | Remove-Item -Force
+    Write-Host "Deleted $($older.Count) older installer(s)."
+}
 
 # --- 1. Checks --------------------------------------------------------------------------------------------------
 Step 'Checking that everything is ready'
@@ -211,19 +222,21 @@ $sums
     RunGit @('push', '-q', 'origin', "refs/tags/$Tag") | Out-Null
 
     Step 'Creating the GitHub release'
-    & gh release create $Tag --repo $repo --verify-tag --title "Discord Music Bot $Version" --notes-file "$work\notes.md" --latest @($files.FullName)
+    '' | & gh release create $Tag --repo $repo --verify-tag --title "Discord Music Bot $Version" --notes-file "$work\notes.md" --latest @($files.FullName)
     if ($LASTEXITCODE -ne 0) { throw "Creating the release failed. The tag $Tag is on GitHub; retry with: gh release create $Tag --verify-tag --notes-file <notes> <files>" }
 
     Step 'Checking the published downloads'
     foreach ($f in $files) {
         $url = "https://github.com/$repo/releases/download/$Tag/$($f.Name)"
-        & curl.exe -fsSL --retry 3 -o "$work\check-$($f.Name)" $url
+        '' | & curl.exe -fsSL --retry 3 -o "$work\check-$($f.Name)" $url
         $ok = ($LASTEXITCODE -eq 0) -and ((Get-FileHash "$work\check-$($f.Name)").Hash -eq (Get-FileHash $f.FullName).Hash)
         Write-Host "  $($f.Name): $(if ($ok) { 'OK' } else { 'MISMATCH - check the release page' })"
     }
-    New-Item -ItemType Directory -Force (Join-Path $Root 'dist') | Out-Null
-    $files | Copy-Item -Destination (Join-Path $Root 'dist') -Force
+    $dist = Join-Path $Root 'dist'
+    New-Item -ItemType Directory -Force $dist | Out-Null
+    $files | Copy-Item -Destination $dist -Force
     Write-Host "`nReleased: https://github.com/$repo/releases/tag/$Tag  (installers also copied to dist)" -ForegroundColor Green
+    Remove-OlderInstallers $dist @($files.Name)
 }
 catch {
     Write-Host "`nError: $_" -ForegroundColor Red
