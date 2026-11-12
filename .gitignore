@@ -1,6 +1,9 @@
 # Secrets: the bot token. Never commit this; .env.example shows the format.
 .env
 
+# Extra private strings release.ps1 checks installers for (e.g. a work email)
+private-strings.txt
+
 # Data the bot creates while running
 playlists.json
 setup.log

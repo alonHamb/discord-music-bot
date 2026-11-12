@@ -23,6 +23,24 @@ The first run sets up what's missing: the Python environment in `.venv` and its 
   `sudo apt install python3 python3-venv ffmpeg`).
 - `run.cmd` works even where PowerShell blocks scripts ("running scripts is disabled on this system").
 
+## Releasing a new version
+
+Commit your changes on `main`, then run:
+
+```
+.\release.cmd            # asks for the version (suggests the next one)
+.\release.cmd 1.0.4
+.\release.cmd 1.0.4 -DryRun   # everything except publishing, then undoes the commit and tag
+```
+
+It checks that you're on `main` with everything committed and in sync with GitHub and that the version is new;
+sets `VERSION`, commits and tags `v1.0.4`; builds both installers from that tag in a clean folder; checks them for
+private information (your token and server ID from `.env`, your real Git emails, your user folder and PC name, and
+anything you list in `private-strings.txt`, which Git ignores); shows a summary and **asks before publishing**. Then
+it pushes, creates the GitHub release (notes list the commits since the last release, plus checksums) and checks
+the downloads. If you say no or anything fails before publishing, the commit and tag are undone. Needs the GitHub
+CLI logged in (`gh auth login`), plus Inno Setup and WSL like the build.
+
 ## Building installers
 
 After changing the code, build new installers with `build.ps1` (PowerShell, in this folder):
