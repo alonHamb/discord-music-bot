@@ -3,6 +3,26 @@
 Plays YouTube, SoundCloud, Spotify and Apple Music links (Spotify/Apple songs are matched to YouTube) with a queue,
 loop, shuffle and saved playlists. Type `/help` in Discord for the command list.
 
+## Run it from this folder (development)
+
+No installer or package needed. In this folder:
+
+| Windows | Linux |
+|---|---|
+| `.\run.cmd` | `./run.sh` |
+
+The first run sets up what's missing: the Python environment in `.venv` and its packages, the bot token in `.env`
+(it asks for it; Git ignores the file), and FFmpeg and Deno (it offers to install them). Then it starts the bot;
+**Ctrl+C** stops it. Later runs start right away and only reinstall packages after `requirements.txt` changes.
+
+- `.\run.cmd -SetupOnly` / `./run.sh --setup-only` sets everything up without starting the bot.
+- It warns you if another copy of the bot is already running (the installed one, or another `run`), because two
+  copies with the same token both answer commands. Stop the installed bot first: Start menu → Stop bot on Windows,
+  `sudo discord-music-bot stop` on Linux.
+- Needs Python 3.10 or newer (Windows: `winget install Python.Python.3.13`; Debian/Ubuntu:
+  `sudo apt install python3 python3-venv ffmpeg`).
+- `run.cmd` works even where PowerShell blocks scripts ("running scripts is disabled on this system").
+
 ## Building installers
 
 After changing the code, build new installers with `build.ps1` (PowerShell, in this folder):
