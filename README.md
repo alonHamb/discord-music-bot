@@ -39,11 +39,14 @@ answer commands.
 | Running? | Start menu → Bot status, or `discord-music-bot status` |
 | Restart | Start menu → Restart bot, or `discord-music-bot restart` |
 | Songs stopped loading | `discord-music-bot update-ytdlp` |
-| Stop / don't start with Windows | `discord-music-bot stop` / `disable` (`enable` undoes it) |
+| Stop / start | Start menu → Stop bot / Start bot, or `discord-music-bot stop` / `start` (a stopped bot starts again with Windows) |
+| Don't start with Windows | Start menu → Disable bot, or `discord-music-bot disable` (Enable bot / `enable` undoes it) |
 | Upgrade | run the newer Setup.exe: it says which version is installed and, once you agree, fully uninstalls it before installing the new one (keeps the token and playlists; downloads Python, FFmpeg and Deno again, a few minutes) |
 | Uninstall | Settings → Apps → Discord Music Bot (asks whether to keep the token and playlists) |
 
-Commands that change something ask for admin permission. Where things live: the program in
+Commands that change something ask for admin permission. The Start menu entries also show up when you search
+Windows for "bot". In a terminal that was already open before installing, `discord-music-bot` isn't found yet:
+open a new terminal, or use the full path `"C:\Program Files\Discord Music Bot\discord-music-bot.cmd"`. Where things live: the program in
 `C:\Program Files\Discord Music Bot`; token, playlists and logs in `C:\ProgramData\Discord Music Bot`
 (the token file is readable only by administrators and the bot). If setup fails, its log is
 `C:\ProgramData\Discord Music Bot\install.log`; running the installer again retries.

@@ -31,10 +31,18 @@ SetupLogging=yes
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 
 [Icons]
-Name: "{autoprograms}\{#AppName}\Set bot token"; Filename: "{app}\discord-music-bot.cmd"; Parameters: "token"
+; -Pause keeps each window open until Enter, so its result can be read.
+Name: "{autoprograms}\{#AppName}\Set bot token"; Filename: "{app}\discord-music-bot.cmd"; Parameters: "token -Pause"
 Name: "{autoprograms}\{#AppName}\View live log"; Filename: "{app}\discord-music-bot.cmd"; Parameters: "logs"
-Name: "{autoprograms}\{#AppName}\Bot status"; Filename: "{app}\discord-music-bot.cmd"; Parameters: "status"
-Name: "{autoprograms}\{#AppName}\Restart bot"; Filename: "{app}\discord-music-bot.cmd"; Parameters: "restart"
+Name: "{autoprograms}\{#AppName}\Bot status"; Filename: "{app}\discord-music-bot.cmd"; Parameters: "status -Pause"
+Name: "{autoprograms}\{#AppName}\Restart bot"; Filename: "{app}\discord-music-bot.cmd"; Parameters: "restart -Pause"
+Name: "{autoprograms}\{#AppName}\Stop bot"; Filename: "{app}\discord-music-bot.cmd"; Parameters: "stop -Pause"; \
+  Comment: "Stop the bot (it starts again when Windows starts)"
+Name: "{autoprograms}\{#AppName}\Start bot"; Filename: "{app}\discord-music-bot.cmd"; Parameters: "start -Pause"
+Name: "{autoprograms}\{#AppName}\Disable bot"; Filename: "{app}\discord-music-bot.cmd"; Parameters: "disable -Pause"; \
+  Comment: "Stop the bot and don't start it with Windows"
+Name: "{autoprograms}\{#AppName}\Enable bot"; Filename: "{app}\discord-music-bot.cmd"; Parameters: "enable -Pause"; \
+  Comment: "Start the bot, and start it with Windows"
 
 [Registry]
 ; Put "discord-music-bot" on PATH (removed again on uninstall, see [Code]).

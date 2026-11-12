@@ -1,5 +1,6 @@
 # The "discord-music-bot" command on Windows. Run without arguments for help.
-param([string]$Command = 'help', [Parameter(ValueFromRemainingArguments)] [string[]]$Rest = @(), [switch]$Elevated)
+# -Pause (used by the Start menu shortcuts) keeps the window open at the end so its result can be read.
+param([string]$Command = 'help', [Parameter(ValueFromRemainingArguments)] [string[]]$Rest = @(), [switch]$Elevated, [switch]$Pause)
 $ErrorActionPreference = 'Stop'
 
 $App = $PSScriptRoot
@@ -21,7 +22,7 @@ function Need-Admin {
     exit 0
 }
 function Done($code = 0) {
-    if ($Elevated) { Read-Host "`nPress Enter to close" | Out-Null }
+    if ($Elevated -or $Pause) { Read-Host "`nPress Enter to close" | Out-Null }
     exit $code
 }
 
