@@ -60,11 +60,21 @@ YDL_OPTIONS = {
 }
 
 
-def open_stream(url: str) -> subprocess.Popen:
-    """Have yt-dlp download the audio to stdout. YouTube blocks FFmpeg fetching stream URLs directly (403)."""
+PREFETCH_LEAD = 25  # seconds before a song ends to start preparing the next one
+PREFETCH_POLL = 2  # how often (seconds) to check whether the playing song is that close to its end
+
+
+def open_stream(url: str, fast: bool = True) -> subprocess.Popen:
+    """Have yt-dlp download the audio to stdout. YouTube blocks FFmpeg fetching stream URLs directly (403).
+
+    fast skips YouTube's TV client: YouTube often attaches an ad to it, and yt-dlp then sits through the ad in
+    silence ("Sleeping 4 seconds as required by the site"). That cuts the time to first audio from ~8 s to ~2 s.
+    """
     cmd = [sys.executable, "-m", "yt_dlp", "-q", "--no-warnings", "--no-playlist", "-f", "bestaudio/best", "-o", "-"]
     if DENO:
         cmd += ["--js-runtimes", f"deno:{DENO}"]
+    if fast:
+        cmd += ["--extractor-args", "youtube:player_client=default,-tv_samsung"]
     return subprocess.Popen(cmd + [url], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
@@ -97,7 +107,18 @@ class BufferedAudio(discord.AudioSource):
         self._frames: queue.Queue[bytes] = queue.Queue(maxsize=ahead)
         self._stop = threading.Event()
         self._ended = threading.Event()
+        self.frames_in = 0  # decoded so far
+        self.frames_out = 0  # handed to Discord so far
         threading.Thread(target=self._fill, daemon=True, name="audio-buffer").start()
+
+    @property
+    def played_seconds(self) -> float:
+        return self.frames_out * 0.02
+
+    @property
+    def failed(self) -> bool:
+        """The stream ended without producing any audio (e.g. yt-dlp couldn't get the song)."""
+        return self._ended.is_set() and self.frames_in == 0
 
     def _fill(self):
         while not self._stop.is_set():
@@ -105,6 +126,8 @@ class BufferedAudio(discord.AudioSource):
                 data = self._inner.read()
             except Exception:  # the stream was cleaned up under us (song skipped)
                 data = b""
+            if data:
+                self.frames_in += 1
             while not self._stop.is_set():
                 try:
                     self._frames.put(data, timeout=0.5)
@@ -123,9 +146,12 @@ class BufferedAudio(discord.AudioSource):
 
     def read(self) -> bytes:
         try:
-            return self._frames.get(timeout=30)  # buffer ran dry: wait, as an unbuffered stream would
+            data = self._frames.get(timeout=30)  # buffer ran dry: wait, as an unbuffered stream would
         except queue.Empty:
             return b""  # nothing for 30 s: give up on this song
+        if data:
+            self.frames_out += 1
+        return data
 
     def is_opus(self) -> bool:
         return False
@@ -133,6 +159,41 @@ class BufferedAudio(discord.AudioSource):
     def cleanup(self):
         self._stop.set()
         self._inner.cleanup()
+
+
+class Stream:
+    """A song being downloaded and decoded (yt-dlp -> FFmpeg -> buffer), ready to hand to Discord."""
+
+    def __init__(self, url: str, fast: bool = True):
+        self.downloader = open_stream(url, fast)
+        self.audio = BufferedAudio(PipedFFmpegAudio(self.downloader, executable=FFMPEG,
+                                                    before_options="-loglevel error", options="-vn"))
+
+    def close(self):
+        self.audio.cleanup()
+        self.downloader.kill()
+
+    @classmethod
+    async def open(cls, track: "Track") -> "Stream":
+        """Match the song if needed, start it, and wait until 1 s of audio is ready."""
+        if track.needs_match:
+            await track.start_matching()
+        stream = cls(track.page_url)
+        await asyncio.to_thread(stream.audio.wait_ready)
+        if stream.audio.failed:  # the fast way got nothing (YouTube hiccup): retry the usual, slower way
+            stream.close()
+            print(f"Fast start failed for {track.title!r}; retrying the slower way.")
+            stream = cls(track.page_url, fast=False)
+            await asyncio.to_thread(stream.audio.wait_ready)
+        return stream
+
+
+def close_when_done(task: asyncio.Task):
+    """Close the Stream a preparing task produces, whenever it finishes (it can't be cancelled midway safely)."""
+    def done(t: asyncio.Task):
+        if not t.cancelled() and t.exception() is None:
+            t.result().close()
+    task.add_done_callback(done)
 
 
 @dataclass
@@ -185,11 +246,34 @@ class GuildPlayer:
         self.volume = 1.0
         self.loop = "off"  # "off", "track" or "queue"
         self.skipping = False  # set by /skip so a looped track moves on
+        self.prefetched: tuple[Track, asyncio.Task] | None = None  # the next song, being prepared ahead of time
 
     def reset(self):
         # Clearing current first keeps the after-callback from looping it back in.
         self.queue.clear()
         self.current = None
+        self.discard_prefetch()
+
+    def peek_next(self) -> Track | None:
+        """The song that will play after the current one, if nothing changes."""
+        if self.loop == "track" and self.current:
+            return self.current
+        if self.queue:
+            return self.queue[0]
+        return self.current if self.loop == "queue" else None
+
+    def take_prefetch(self, track: Track) -> asyncio.Task | None:
+        """The prepared stream for `track`, if that's what was prepared; anything else is thrown away."""
+        if self.prefetched and self.prefetched[0] is track:
+            task, self.prefetched = self.prefetched[1], None
+            return task
+        self.discard_prefetch()
+        return None
+
+    def discard_prefetch(self):
+        if self.prefetched:
+            close_when_done(self.prefetched[1])
+            self.prefetched = None
 
 
 async def fetch_tracks(query: str, requester: str) -> tuple[list[Track], str | None]:
@@ -321,25 +405,39 @@ class MusicBot(discord.Client):
             vc = guild.voice_client
             return player.current is track and vc is not None and not vc.is_playing() and not vc.is_paused()
 
-        if track.needs_match:
-            await track.start_matching()
-            if not still_wanted():
-                return
-        downloader = open_stream(track.page_url)
-        audio = BufferedAudio(PipedFFmpegAudio(downloader, executable=FFMPEG, options="-vn"))
-        await asyncio.to_thread(audio.wait_ready)
+        stream = None
+        prepared = player.take_prefetch(track)
+        if prepared:  # got ready while the previous song played: starts with no gap
+            try:
+                stream = await prepared
+            except Exception as e:
+                print(f"Preparing {track.title!r} ahead failed ({e!r}); starting it now instead.")
+        if stream is None:
+            stream = await Stream.open(track)
         if not still_wanted():
-            audio.cleanup()
-            downloader.kill()
+            stream.close()
             return
 
         def after(err):
-            downloader.kill()  # stop downloading when the song ends or is skipped
+            stream.downloader.kill()  # stop downloading when the song ends or is skipped
             if err:
                 print(f"Playback error: {err!r}")
             self.loop.call_soon_threadsafe(self.play_next, guild)
 
-        guild.voice_client.play(discord.PCMVolumeTransformer(audio, volume=player.volume), after=after)
+        guild.voice_client.play(discord.PCMVolumeTransformer(stream.audio, volume=player.volume), after=after)
+        asyncio.create_task(self._prefetch_near_end(guild, track, stream.audio))
+
+    async def _prefetch_near_end(self, guild: discord.Guild, track: Track, audio: BufferedAudio):
+        """When the playing song is about to end, start preparing the next one so it follows with no gap."""
+        player = self.player(guild.id)
+        while player.current is track and guild.voice_client and (guild.voice_client.is_playing() or guild.voice_client.is_paused()):
+            remaining = (track.duration or 0) - audio.played_seconds  # unknown length: prepare right away
+            if remaining <= PREFETCH_LEAD:
+                upcoming = player.peek_next()
+                if upcoming and not player.prefetched:
+                    player.prefetched = (upcoming, asyncio.create_task(Stream.open(upcoming)))
+                return
+            await asyncio.sleep(PREFETCH_POLL)
 
 
 bot = MusicBot()
