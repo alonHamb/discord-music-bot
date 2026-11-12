@@ -7,14 +7,18 @@ Build installers for the Discord music bot into the dist folder.
 .\build.ps1 windows 1.0.1        # Windows Setup.exe only
 .\build.ps1 linux 1.0.1          # Linux .deb only
 .\build.ps1 all 1.0.1            # both
+.\build.ps1 all 1.0.1 -Yes       # both, and delete older installers without asking
 
-Every .py file in this folder plus requirements.txt goes into the installers. The Windows build needs Inno Setup
-(winget install JRSoftware.InnoSetup); the Linux build needs WSL with Debian or Ubuntu.
+Every .py file in this folder plus requirements.txt goes into the installers. Building a version that's already in
+dist overwrites it; after a successful build, older versions' installers (for the platforms just built) are deleted
+once you confirm. The Windows build needs Inno Setup (winget install JRSoftware.InnoSetup); the Linux build needs
+WSL with Debian or Ubuntu.
 #>
 param(
     [ValidateSet('windows', 'linux', 'all')] [string]$Target,
     [string]$Version,
-    [string]$WslDistro = 'Debian'
+    [string]$WslDistro = 'Debian',
+    [switch]$Yes  # delete older installers without asking
 )
 $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
@@ -41,6 +45,26 @@ if ($last -and $Version -eq $last) {
     Write-Host "Note: $Version was already built. Installed copies only upgrade to a HIGHER version." -ForegroundColor Yellow
 }
 New-Item -ItemType Directory -Force $Dist | Out-Null
+
+# --- Older installers in dist --------------------------------------------------------------------------------------
+# Only for the platforms being built. The same version's installer isn't "old": the build simply overwrites it.
+$installers = @{
+    windows = @{ Pattern = 'discord-music-bot-*-windows-setup.exe'; This = "discord-music-bot-$Version-windows-setup.exe" }
+    linux   = @{ Pattern = 'discord-music-bot_*_all.deb';           This = "discord-music-bot_${Version}_all.deb" }
+}
+$platforms = if ($Target -eq 'all') { 'windows', 'linux' } else { @($Target) }
+$older = @(foreach ($p in $platforms) {
+    Get-ChildItem $Dist -Filter $installers[$p].Pattern | Where-Object Name -ne $installers[$p].This
+})
+foreach ($p in $platforms) {
+    if (Test-Path (Join-Path $Dist $installers[$p].This)) { Write-Host "dist\$($installers[$p].This) exists and will be overwritten." }
+}
+$deleteOlder = $false
+if ($older) {
+    Write-Host "`nOlder installers in dist:"
+    $older | ForEach-Object { Write-Host "  $($_.Name)" }
+    $deleteOlder = $Yes -or ((Read-Host 'Delete them once the new build succeeds? [Y/n]').Trim() -notmatch '^(n|no)$')
+}
 
 # --- Windows -----------------------------------------------------------------------------------------------------
 function Build-Windows {
@@ -81,4 +105,8 @@ function Build-Linux {
 if ($Target -in 'windows', 'all') { Build-Windows }
 if ($Target -in 'linux', 'all') { Build-Linux }
 Set-Content -Path $VersionFile -Value $Version -NoNewline
+if ($deleteOlder) {  # only reached when every build succeeded (failures exit above)
+    $older | Remove-Item -Force
+    Write-Host "Deleted $($older.Count) older installer(s): $(($older.Name) -join ', ')"
+}
 Write-Host "`nDone. Installers are in $Dist" -ForegroundColor Green

@@ -53,8 +53,82 @@ Type: filesandordirs; Name: "{app}\deno"
 Type: filesandordirs; Name: "{app}\__pycache__"
 
 [Code]
+const
+  // Where Windows registers this app's uninstaller (the AppId above, plus "_is1").
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{6B1E8D2A-4C7F-4E39-9A51-D3F0B8C2E741}_is1';
+
 var
   TokenPage: TInputQueryWizardPage;
+  OldVersion, OldUninstaller: string;  // an installed different version, to remove before installing
+
+// -1, 0 or 1 as version A is older than, the same as, or newer than B ("1.2.10" > "1.2.9").
+function CompareVersions(A, B: string): Integer;
+var
+  PA, PB, NA, NB: Integer;
+begin
+  Result := 0;
+  while (Result = 0) and ((A <> '') or (B <> '')) do
+  begin
+    PA := Pos('.', A); if PA = 0 then PA := Length(A) + 1;
+    PB := Pos('.', B); if PB = 0 then PB := Length(B) + 1;
+    NA := StrToIntDef(Copy(A, 1, PA - 1), 0);
+    NB := StrToIntDef(Copy(B, 1, PB - 1), 0);
+    if NA < NB then Result := -1 else if NA > NB then Result := 1;
+    Delete(A, 1, PA);
+    Delete(B, 1, PB);
+  end;
+end;
+
+// Runs before the wizard opens: if another version is installed, say so and ask to remove it first.
+function InitializeSetup: Boolean;
+var
+  Msg: string;
+begin
+  Result := True;
+  OldVersion := '';
+  if not (RegQueryStringValue(HKLM, UninstallKey, 'DisplayVersion', OldVersion) and
+          RegQueryStringValue(HKLM, UninstallKey, 'UninstallString', OldUninstaller)) then
+  begin
+    OldVersion := '';
+    Exit;
+  end;
+  if OldVersion = '{#AppVersion}' then
+  begin
+    OldVersion := '';  // same version: just repair it in place
+    Exit;
+  end;
+  Msg := '{#AppName} ' + OldVersion + ' is already installed.' + #13#10#13#10;
+  if CompareVersions(OldVersion, '{#AppVersion}') > 0 then
+    Msg := Msg + 'Note: the installed version is NEWER than this one ({#AppVersion}).' + #13#10#13#10;
+  Msg := Msg + 'Setup will uninstall version ' + OldVersion + ' first, then install version {#AppVersion}. ' +
+    'Your bot token and saved playlists are kept.' + #13#10#13#10 + 'Uninstall the old version and continue?';
+  // Silent installs (/SILENT, /VERYSILENT) take the default: Yes.
+  if SuppressibleMsgBox(Msg, mbConfirmation, MB_YESNO, IDYES) <> IDYES then
+  begin
+    MsgBox('Nothing was changed. Version ' + OldVersion + ' is still installed.', mbInformation, MB_OK);
+    Result := False;
+  end;
+end;
+
+// Uninstall the old version silently (which keeps the token and playlists) and wait until it's really gone.
+function UninstallOldVersion: Boolean;
+var
+  Code, I: Integer;
+  Exe: string;
+begin
+  Exe := RemoveQuotes(OldUninstaller);
+  Exec(Exe, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  // The uninstaller hands over to a copy of itself and returns at once. Its registry entry goes early, but it keeps
+  // deleting files for a while, so installing then would have it delete the new version too. Its last step is
+  // deleting its own unins000.exe: wait for that (up to 5 minutes).
+  for I := 1 to 600 do
+  begin
+    if (not FileExists(Exe)) and (not RegKeyExists(HKLM, UninstallKey)) then Break;
+    Sleep(500);
+  end;
+  Sleep(1000);
+  Result := (not FileExists(Exe)) and (not RegKeyExists(HKLM, UninstallKey));
+end;
 
 function NotOnPath(Dir: string): Boolean;
 var
@@ -106,11 +180,17 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
 begin
-  // Upgrading: stop the running bot so its files can be replaced.
-  if FileExists(ExpandConstant('{app}\manage.ps1')) then
+  Result := '';
+  if OldVersion <> '' then
+  begin
+    WizardForm.PreparingLabel.Caption := 'Uninstalling version ' + OldVersion + '...';
+    if not UninstallOldVersion then
+      Result := 'Couldn''t uninstall version ' + OldVersion + '. Uninstall it from Settings -> Apps, then run this setup again.';
+  end
+  else if FileExists(ExpandConstant('{app}\manage.ps1')) then
+    // Reinstalling the same version: stop the running bot so its files can be replaced.
     Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\manage.ps1') + '" uninstall-cleanup',
       '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Result := '';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

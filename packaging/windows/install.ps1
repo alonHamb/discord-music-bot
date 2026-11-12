@@ -24,11 +24,27 @@ catch {  # install.log still open (e.g. an earlier, interrupted install): log to
 }
 
 function Step($text) { Write-Host "`n==> $text" -ForegroundColor Cyan }
-function Download($url, $file) {
-    for ($try = 1; ; $try++) {
-        try { Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $file; return }
-        catch { if ($try -ge 3) { throw "Download failed: $url ($_)" }; Start-Sleep 3 }
+function Download([string[]]$urls, $file) {
+    # Windows' built-in curl: much faster than Invoke-WebRequest, and it gives up on a stalled server (under
+    # 50 KB/s for 30 s) instead of waiting forever. Tries each URL in turn, each up to 3 times.
+    foreach ($url in $urls) {
+        Write-Host "    $url"
+        & curl.exe -fsSL --retry 3 --retry-delay 3 --connect-timeout 30 --speed-limit 51200 --speed-time 30 -o $file $url
+        if ($LASTEXITCODE -eq 0) { return }
+        Write-Host "    (failed with curl exit code $LASTEXITCODE)"
     }
+    throw "Download failed: $($urls -join ' or ')"
+}
+function Url-Exists($url) { & curl.exe -fsIL --connect-timeout 30 --max-time 60 -o NUL $url; $LASTEXITCODE -eq 0 }
+function Extract-One($zip, $name, $dest) {  # copy one file out of a zip, wherever it is inside
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($zip)
+    try {
+        $entry = $archive.Entries | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+        if (-not $entry) { throw "$name not found in $zip" }
+        New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
+        [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+    } finally { $archive.Dispose() }
 }
 function Run($exe) {  # run a program with its output in the log; fail loudly if it fails
     $ErrorActionPreference = 'Continue'  # its stderr lines (e.g. pip warnings) aren't errors
@@ -67,13 +83,13 @@ try {
     # --- Python: the official "embeddable" build, private to this folder ------------------------------------------
     if (-not (Test-Path $Python)) {
         Step "Downloading Python $PythonMinor"
-        $index = (Invoke-WebRequest -UseBasicParsing 'https://www.python.org/ftp/python/').Content
+        $index = (& curl.exe -fsSL --connect-timeout 30 --max-time 60 'https://www.python.org/ftp/python/') -join "`n"
         $patches = [regex]::Matches($index, "href=`"$([regex]::Escape($PythonMinor))\.(\d+)/`"") |
             ForEach-Object { [int]$_.Groups[1].Value } | Sort-Object -Descending -Unique
         $zipUrl = $null
         foreach ($p in $patches) {  # newest patch release that has a Windows build
             $url = "https://www.python.org/ftp/python/$PythonMinor.$p/python-$PythonMinor.$p-embed-amd64.zip"
-            try { Invoke-WebRequest -UseBasicParsing -Method Head $url | Out-Null; $zipUrl = $url; break } catch {}
+            if (Url-Exists $url) { $zipUrl = $url; break }
         }
         if (-not $zipUrl) { throw "Couldn't find a Python $PythonMinor download on python.org" }
         Download $zipUrl "$Tmp\python.zip"
@@ -95,16 +111,15 @@ try {
     $ffmpeg = Join-Path $App 'ffmpeg\ffmpeg.exe'
     if (-not (Test-Path $ffmpeg)) {
         Step 'Downloading FFmpeg'
-        Download 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' "$Tmp\ffmpeg.zip"
-        Expand-Archive "$Tmp\ffmpeg.zip" "$Tmp\ffmpeg" -Force
-        New-Item -ItemType Directory -Force (Split-Path $ffmpeg) | Out-Null
-        Copy-Item (Get-ChildItem "$Tmp\ffmpeg" -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName $ffmpeg
+        Download @('https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
+                   'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip') "$Tmp\ffmpeg.zip"
+        Extract-One "$Tmp\ffmpeg.zip" 'ffmpeg.exe' $ffmpeg
     }
     $deno = Join-Path $App 'deno\deno.exe'
     if (-not (Test-Path $deno)) {
         Step 'Downloading Deno (YouTube needs it)'
         Download 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip' "$Tmp\deno.zip"
-        Expand-Archive "$Tmp\deno.zip" (Split-Path $deno) -Force
+        Extract-One "$Tmp\deno.zip" 'deno.exe' $deno
     }
 
     Step 'Checking the bot loads'

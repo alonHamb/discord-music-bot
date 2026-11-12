@@ -15,7 +15,9 @@ After changing the code, build new installers with `build.ps1` (PowerShell, in t
 ```
 
 They land in `dist/`. Always use a **higher version** than what's installed, or the upgrade does nothing; the
-last version built is kept in `VERSION`. Every `.py` file in this folder plus `requirements.txt` goes in, so new
+last version built is kept in `VERSION`. Rebuilding the same version overwrites its installer. If `dist/` has
+installers of older versions for the platforms you're building, the script lists them and asks whether to delete
+them once the new build succeeds (Enter = yes; add `-Yes` to skip the question). A failed build deletes nothing. Every `.py` file in this folder plus `requirements.txt` goes in, so new
 files and new packages are picked up automatically. The Windows build needs Inno Setup
 (`winget install JRSoftware.InnoSetup`); the Linux build needs WSL with Debian or Ubuntu (`-WslDistro Ubuntu` to
 pick another one). Test your change on Windows first (`.venv\Scripts\python.exe bot.py`) before building.
@@ -38,7 +40,7 @@ answer commands.
 | Restart | Start menu → Restart bot, or `discord-music-bot restart` |
 | Songs stopped loading | `discord-music-bot update-ytdlp` |
 | Stop / don't start with Windows | `discord-music-bot stop` / `disable` (`enable` undoes it) |
-| Upgrade | run the newer Setup.exe (keeps the token and playlists) |
+| Upgrade | run the newer Setup.exe: it says which version is installed and, once you agree, fully uninstalls it before installing the new one (keeps the token and playlists; downloads Python, FFmpeg and Deno again, a few minutes) |
 | Uninstall | Settings → Apps → Discord Music Bot (asks whether to keep the token and playlists) |
 
 Commands that change something ask for admin permission. Where things live: the program in
