@@ -47,7 +47,7 @@ function VersionKey($v) { $p = $v -split '\.'; [int]$p[0] * 1000000 + [int]$p[1]
 # --- 1. Checks --------------------------------------------------------------------------------------------------
 Step 'Checking that everything is ready'
 if (-not (Quiet { gh auth status })) { Fail 'The GitHub CLI is not logged in. Run:  gh auth login' }
-$repo = (& gh repo view --json nameWithOwner --jq .nameWithOwner 2>$null)
+$repo = ('' | & gh repo view --json nameWithOwner --jq .nameWithOwner 2>$null)
 if (-not $repo) { Fail "This folder isn't connected to a GitHub repository." }
 $branch = RunGit @('branch', '--show-current')
 if ($branch -ne 'main') { Fail "You're on branch '$branch'. Releases are made from main:  git checkout main" }
@@ -133,8 +133,9 @@ try {
     # Unpack the .deb in WSL and print every file in it (a script file: PowerShell 5.1 mangles quotes passed inline).
     $unpack = "d=`$(mktemp -d)`ndpkg-deb -R `"`$1`" `"`$d`"`nfind `"`$d`" -type f -exec cat {} +`nrm -rf `"`$d`"`n"
     [IO.File]::WriteAllText("$work\unpack.sh", $unpack)
-    $wsl = { param($p) (& wsl.exe -d $WslDistro -- wslpath -a ($p -replace '\\', '/') | Out-String).Trim() }
-    $texts[$deb.Name] = (& wsl.exe -d $WslDistro -- bash (& $wsl "$work\unpack.sh") (& $wsl $deb.FullName) | Out-String)
+    # '' | gives wsl.exe no keyboard input: it would otherwise swallow your answer to the publish question.
+    $wsl = { param($p) ('' | & wsl.exe -d $WslDistro -- wslpath -a ($p -replace '\\', '/') | Out-String).Trim() }
+    $texts[$deb.Name] = ('' | & wsl.exe -d $WslDistro -- bash (& $wsl "$work\unpack.sh") (& $wsl $deb.FullName) | Out-String)
     if ($texts[$deb.Name] -notmatch 'Package: discord-music-bot') { throw "Couldn't unpack $($deb.Name) to check it." }
     $leaks = foreach ($f in $texts.Keys) {
         foreach ($s in $secrets.Keys) { if ($texts[$f].IndexOf($secrets[$s], [StringComparison]::OrdinalIgnoreCase) -ge 0) { "$f contains $s" } }
