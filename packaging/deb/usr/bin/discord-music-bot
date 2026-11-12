@@ -1,0 +1,80 @@
+#!/bin/sh
+# Manage the Discord music bot service.
+set -e
+
+SERVICE=discord-music-bot
+ENV_FILE=/etc/discord-music-bot/bot.env
+APP=/opt/discord-music-bot
+
+need_root() {
+    [ "$(id -u)" -eq 0 ] || { echo "Run this with sudo:  sudo discord-music-bot $1"; exit 1; }
+}
+
+set_setting() {  # set_setting KEY VALUE: replace the KEY= line in the settings file
+    tmp=$(mktemp)
+    grep -v "^$1=" "$ENV_FILE" >"$tmp" || true
+    printf '%s=%s\n' "$1" "$2" >>"$tmp"
+    cat "$tmp" >"$ENV_FILE"  # keeps the file's root-only permissions
+    rm -f "$tmp"
+}
+
+case "${1:-help}" in
+    token)
+        need_root token
+        echo "Get the token from https://discord.com/developers/applications -> your app -> Bot -> Reset Token."
+        printf "Paste the bot token (hidden while typing): "
+        stty -echo 2>/dev/null || true; read -r token; stty echo 2>/dev/null || true; echo
+        [ "${#token}" -ge 50 ] || { echo "That doesn't look like a bot token (too short). Nothing changed."; exit 1; }
+        printf "Your server ID for instant command updates (optional, press Enter to skip): "
+        read -r guild_id
+        set_setting DISCORD_TOKEN "$token"
+        set_setting GUILD_ID "$guild_id"
+        systemctl enable "$SERVICE" >/dev/null 2>&1
+        started_at=$(date '+%Y-%m-%d %H:%M:%S')
+        systemctl restart "$SERVICE"
+        echo "Saved. Starting the bot (usually a few seconds, up to a minute)..."
+        for _ in $(seq 1 90); do
+            log=$(journalctl -u "$SERVICE" --since "$started_at" -q --no-pager -o cat)
+            if echo "$log" | grep -q "Logged in as"; then
+                echo "$log" | grep "Logged in as" | tail -n 1
+                echo "The bot is running and starts automatically on boot."
+                exit 0
+            fi
+            if echo "$log" | grep -qE "LoginFailure|Improper token"; then
+                echo "Discord rejected that token. Run  sudo discord-music-bot token  again with the right one."
+                exit 1
+            fi
+            sleep 1
+        done
+        echo "It hasn't logged in yet. Check:  sudo discord-music-bot logs"
+        ;;
+    logs)      need_root logs; exec journalctl -u "$SERVICE" -f -n 50 ;;
+    status)    exec systemctl status "$SERVICE" --no-pager ;;
+    restart)   need_root restart; systemctl restart "$SERVICE"; echo "Restarted." ;;
+    stop)      need_root stop; systemctl stop "$SERVICE"; echo "Stopped (it starts again on boot; use 'disable' to prevent that)." ;;
+    start)     need_root start; systemctl start "$SERVICE"; echo "Started." ;;
+    disable)   need_root disable; systemctl disable --now "$SERVICE"; echo "Stopped and won't start on boot." ;;
+    enable)    need_root enable; systemctl enable --now "$SERVICE"; echo "Started, and starts on boot." ;;
+    update-ytdlp)
+        need_root update-ytdlp
+        "$APP/venv/bin/python" -m pip install -q --upgrade "yt-dlp[default,curl-cffi]"
+        systemctl restart "$SERVICE"
+        echo "yt-dlp is now $("$APP/venv/bin/python" -m yt_dlp --version); bot restarted."
+        ;;
+    *)
+        cat <<EOF
+Usage: sudo discord-music-bot <command>
+
+  token          set the bot token (and optional server ID), then start the bot
+  logs           follow the bot's live log (Ctrl+C to quit)
+  status         show whether the bot is running
+  restart        restart the bot
+  stop | start   stop or start the bot
+  disable        stop the bot and don't start it on boot
+  enable         start the bot and start it on boot
+  update-ytdlp   update yt-dlp (try this if songs stop loading), then restart
+
+Settings: $ENV_FILE    Playlists: /var/lib/discord-music-bot/playlists.json
+EOF
+        ;;
+esac

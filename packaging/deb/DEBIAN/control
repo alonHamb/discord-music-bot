@@ -1,0 +1,14 @@
+Package: discord-music-bot
+Version: @VERSION@
+Architecture: all
+Maintainer: alonHamb <48965210+alonHamb@users.noreply.github.com>
+Section: sound
+Priority: optional
+Depends: python3 (>= 3.10), python3-venv, ffmpeg, curl, unzip, ca-certificates, systemd
+Description: Discord music bot (YouTube, SoundCloud, Spotify, Apple Music)
+ Plays music in Discord voice channels from YouTube and SoundCloud, and from
+ Spotify and Apple Music links (matched to YouTube). Queue, loop, shuffle and
+ saved playlists. Runs as the discord-music-bot systemd service.
+ .
+ After installing, set the bot token with: sudo discord-music-bot token
+ Installation downloads the Python packages and Deno, so it needs internet.

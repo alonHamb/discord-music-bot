@@ -1,0 +1,12 @@
+#!/bin/sh
+# Stop the bot before its files are removed or replaced.
+set -e
+case "$1" in
+    remove|deconfigure)
+        systemctl disable --now discord-music-bot >/dev/null 2>&1 || true
+        ;;
+    upgrade)
+        systemctl stop discord-music-bot >/dev/null 2>&1 || true  # postinst of the new version starts it again
+        ;;
+esac
+exit 0

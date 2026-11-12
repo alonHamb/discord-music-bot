@@ -1,0 +1,57 @@
+#!/bin/sh
+# Runs after the package's files are in place: create the bot's user, Python environment and Deno,
+# then start the service if a token is already configured.
+set -e
+
+APP=/opt/discord-music-bot
+DATA=/var/lib/discord-music-bot
+ENV_FILE=/etc/discord-music-bot/bot.env
+LOG=/var/log/discord-music-bot-install.log
+SERVICE=discord-music-bot
+
+[ "$1" = "configure" ] || exit 0
+
+step() { printf 'discord-music-bot: %s\n' "$*"; }
+quiet() {
+    "$@" >>"$LOG" 2>&1 && return 0
+    tail -n 20 "$LOG"
+    step "FAILED: $*  (full output: $LOG)"
+    exit 1
+}
+: >"$LOG"
+
+# A locked system user that owns only the data folder.
+if ! getent passwd "$SERVICE" >/dev/null; then
+    useradd --system --home-dir "$DATA" --no-create-home --shell /usr/sbin/nologin "$SERVICE"
+fi
+mkdir -p "$DATA"
+chown "$SERVICE:$SERVICE" "$DATA"
+chmod 750 "$DATA"
+chown root:root "$ENV_FILE"
+chmod 600 "$ENV_FILE"  # the token: root only (systemd reads it, the bot gets it as an environment variable)
+
+step "setting up the Python environment (downloads packages; can take a few minutes)"
+[ -x "$APP/venv/bin/python" ] || quiet python3 -m venv "$APP/venv"
+quiet "$APP/venv/bin/python" -m pip install --upgrade pip
+quiet "$APP/venv/bin/python" -m pip install --upgrade -r "$APP/requirements.txt"
+
+if [ -x "$APP/deno/bin/deno" ]; then
+    step "updating Deno"
+    "$APP/deno/bin/deno" upgrade -q >>"$LOG" 2>&1 || step "Deno update failed; keeping the current version"
+else
+    step "installing Deno (YouTube needs it)"
+    quiet sh -c "curl -fsSL https://deno.land/install.sh | DENO_INSTALL='$APP/deno' sh -s -- -y --no-modify-path"
+fi
+
+step "checking the bot loads"
+quiet sh -c "cd '$APP' && '$APP/venv/bin/python' -c 'import bot'"
+
+systemctl daemon-reload >/dev/null 2>&1 || true
+if grep -Eq '^DISCORD_TOKEN=[^[:space:]]{50,}' "$ENV_FILE"; then
+    systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+    systemctl restart "$SERVICE" || true
+    step "installed and running. Live log: sudo discord-music-bot logs"
+else
+    step "installed. Set your bot token to start it:  sudo discord-music-bot token"
+fi
+exit 0

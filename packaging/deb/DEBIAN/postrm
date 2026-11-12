@@ -1,0 +1,20 @@
+#!/bin/sh
+# remove: delete what postinst generated (Python environment, Deno). Settings and playlists are kept.
+# purge:  also delete the token, saved playlists, logs and the bot's system user.
+set -e
+case "$1" in
+    remove)
+        rm -rf /opt/discord-music-bot/venv /opt/discord-music-bot/deno /opt/discord-music-bot/__pycache__
+        rmdir /opt/discord-music-bot 2>/dev/null || true
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        ;;
+    purge)
+        rm -rf /opt/discord-music-bot /var/lib/discord-music-bot /etc/discord-music-bot
+        rm -f /var/log/discord-music-bot-install.log
+        if getent passwd discord-music-bot >/dev/null; then
+            userdel discord-music-bot >/dev/null 2>&1 || true
+        fi
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        ;;
+esac
+exit 0

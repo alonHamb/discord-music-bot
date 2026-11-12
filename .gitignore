@@ -1,0 +1,20 @@
+# Secrets: the bot token. Never commit this; .env.example shows the format.
+.env
+
+# Data the bot creates while running
+playlists.json
+setup.log
+
+# Rebuilt automatically
+.venv/
+__pycache__/
+
+# Built installers: rebuild with build.ps1 (publish them as GitHub Releases rather than committing them)
+dist/
+
+# Editor settings (PyCharm)
+.idea/
+
+# Partial downloads yt-dlp can leave behind when a stream is stopped
+*-Frag*
+*.part

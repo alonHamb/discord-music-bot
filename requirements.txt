@@ -1,0 +1,5 @@
+discord.py[voice]>=2.6
+# davey 0.2 needs execute_transition() calls that discord.py 2.7.1 doesn't make: voice encryption never gets ready and the bot is silent
+davey<0.2
+yt-dlp[default,curl-cffi]
+python-dotenv

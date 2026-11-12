@@ -1,0 +1,12 @@
+# Normalize line endings in the repository; check out with the platform's default...
+* text=auto
+
+# ...except files that must keep specific endings wherever they're checked out:
+# Linux scripts and package files break with Windows line endings,
+*.sh text eol=lf
+packaging/deb/** text eol=lf
+# and Windows batch files can misbehave with Unix ones.
+*.cmd text eol=crlf
+
+*.exe binary
+*.deb binary

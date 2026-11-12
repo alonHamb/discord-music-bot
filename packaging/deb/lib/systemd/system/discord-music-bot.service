@@ -1,0 +1,27 @@
+[Unit]
+Description=Discord music bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=discord-music-bot
+Group=discord-music-bot
+WorkingDirectory=/var/lib/discord-music-bot
+EnvironmentFile=/etc/discord-music-bot/bot.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PLAYLISTS_FILE=/var/lib/discord-music-bot/playlists.json
+Environment=DENO_PATH=/opt/discord-music-bot/deno/bin/deno
+ExecStart=/opt/discord-music-bot/venv/bin/python /opt/discord-music-bot/bot.py
+Restart=on-failure
+RestartSec=10
+
+# Lock the bot down: it can only write to its own data folder.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/discord-music-bot
+
+[Install]
+WantedBy=multi-user.target
