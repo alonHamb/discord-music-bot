@@ -6,7 +6,8 @@ Publish a new version as a GitHub release in one step. Start it with release.cmd
   1. Checks: on main, everything committed and in sync with GitHub, the version is new and higher than the last
      release, the GitHub CLI is logged in.
   2. Sets VERSION, commits it, and tags v<version>.
-  3. Builds the Windows and Linux installers from that tag, in a clean folder (nothing local gets in).
+  3. Builds the Windows installer, the Linux package and the portable versions of both from that tag, in a clean
+     folder (nothing local gets in).
   4. Checks the installers for private information: your bot token and server ID, your real email addresses,
      your user folder and your PC's name (all read from this PC at run time).
   5. Shows a summary and asks before publishing. If you say no, or anything fails before publishing, the commit
@@ -46,7 +47,8 @@ function VersionKey($v) { $p = $v -split '\.'; [int]$p[0] * 1000000 + [int]$p[1]
 function Remove-OlderInstallers($dist, [string[]]$keep) {
     # Like build.ps1: older versions' installers in dist are deleted once you confirm (Enter = yes).
     $older = @(Get-ChildItem $dist -File | Where-Object {
-        ($_.Name -like 'discord-music-bot-*-windows-setup.exe' -or $_.Name -like 'discord-music-bot_*_all.deb') -and $_.Name -notin $keep })
+        ($_.Name -like 'discord-music-bot-*-windows-setup.exe' -or $_.Name -like 'discord-music-bot-*-windows-portable.zip' -or
+         $_.Name -like 'discord-music-bot_*_all.deb' -or $_.Name -like 'discord-music-bot-*-linux-portable.tar.gz') -and $_.Name -notin $keep })
     if (-not $older) { return }
     Write-Host "`nOlder installers in dist:"
     $older | ForEach-Object { Write-Host "  $($_.Name)" }
@@ -113,7 +115,7 @@ try {
         Where-Object { $_ -notmatch 'was already built' }
     if ($LASTEXITCODE -ne 0) { throw 'Building the installers failed (see above).' }
     $files = @(Get-ChildItem "$work\source\dist" -File | Where-Object { $_.Name -like "*$Version*" })
-    if ($files.Count -ne 2) { throw "Expected 2 installers, found: $($files.Name -join ', ')" }
+    if ($files.Count -ne 4) { throw "Expected 4 installers (setup, Windows zip, .deb, Linux .tar.gz), found: $($files.Name -join ', ')" }
 
     # --- 4. Privacy check ----------------------------------------------------------------------------------------
     Step 'Checking the installers for private information'
@@ -148,6 +150,23 @@ try {
     $wsl = { param($p) ('' | & wsl.exe -d $WslDistro -- wslpath -a ($p -replace '\\', '/') | Out-String).Trim() }
     $texts[$deb.Name] = ('' | & wsl.exe -d $WslDistro -- bash (& $wsl "$work\unpack.sh") (& $wsl $deb.FullName) | Out-String)
     if ($texts[$deb.Name] -notmatch 'Package: discord-music-bot') { throw "Couldn't unpack $($deb.Name) to check it." }
+    $zip = $files | Where-Object Extension -eq '.zip'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($zip.FullName)
+    try {  # every file in the zip, plus the file names themselves (e.g. a stray .env)
+        $texts[$zip.Name] = ($archive.Entries | ForEach-Object {
+            $_.FullName; $r = New-Object IO.StreamReader($_.Open()); try { $r.ReadToEnd() } finally { $r.Dispose() } }) -join "`n"
+        $private = @($archive.Entries | Where-Object { $_.Name -in '.env', 'playlists.json', 'private-strings.txt' })
+        if ($private) { throw "$($zip.Name) contains private files: $($private.FullName -join ', ')" }
+    } finally { $archive.Dispose() }
+    $tgz = $files | Where-Object Name -like '*.tar.gz'
+    $untar = Join-Path $work 'untar'; New-Item -ItemType Directory $untar | Out-Null
+    '' | & "$env:SystemRoot\System32\tar.exe" -xzf $tgz.FullName -C $untar  # Windows' own tar
+    if ($LASTEXITCODE -ne 0) { throw "Couldn't unpack $($tgz.Name) to check it." }
+    $tgzFiles = @(Get-ChildItem $untar -Recurse -File -Force)
+    $texts[$tgz.Name] = ($tgzFiles | ForEach-Object { $_.FullName.Substring($untar.Length); [IO.File]::ReadAllText($_.FullName) }) -join "`n"
+    $private = @($tgzFiles | Where-Object { $_.Name -in '.env', 'playlists.json', 'private-strings.txt' })
+    if ($private) { throw "$($tgz.Name) contains private files: $($private.Name -join ', ')" }
     $leaks = foreach ($f in $texts.Keys) {
         foreach ($s in $secrets.Keys) { if ($texts[$f].IndexOf($secrets[$s], [StringComparison]::OrdinalIgnoreCase) -ge 0) { "$f contains $s" } }
     }
@@ -158,7 +177,7 @@ try {
     $range = if ($lastTag) { "refs/tags/$lastTag..refs/tags/$Tag" } else { "refs/tags/$Tag" }
     $changes = @(RunGit @('log', '--format=%s', '--no-merges', $range) | Where-Object { $_ -notmatch '^Release \d' })
     $changeText = if ($changes) { ($changes | ForEach-Object { "- $_" }) -join "`n" } else { '- Maintenance release.' }
-    $exeName = $exe.Name; $debName = $deb.Name
+    $exeName = $exe.Name; $debName = $deb.Name; $zipName = $zip.Name; $tgzName = $tgz.Name
     $sums = ($files | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }) -join "`n"
     $notes = @"
 A Discord music bot with slash commands: plays YouTube and SoundCloud, plus Spotify and Apple Music links (matched to the best YouTube upload). Queue, loop (song or whole queue), shuffle, volume and saved playlists. Type ``/help`` in Discord for the full list.
@@ -167,8 +186,10 @@ A Discord music bot with slash commands: plays YouTube and SoundCloud, plus Spot
 
 | | File |
 |---|---|
-| **Windows** 10/11, 64-bit | ``$exeName`` |
+| **Windows** 10/11, 64-bit: installer | ``$exeName`` |
+| **Windows**, no installer (e.g. where Smart App Control blocks the setup) | ``$zipName`` |
 | **Linux**: Debian, Ubuntu, Raspberry Pi OS (64-bit) | ``$debName`` |
+| **Linux**, no package (any distro with Python 3.10+ and FFmpeg) | ``$tgzName`` |
 
 You need your own Discord bot and its token: create one at https://discord.com/developers/applications (Bot -> Reset Token), and invite it to your server with the ``bot`` and ``applications.commands`` scopes and the Connect, Speak and Send Messages permissions.
 
@@ -176,7 +197,11 @@ You need your own Discord bot and its token: create one at https://discord.com/d
 
 Run the setup and paste your bot token when it asks. It downloads its own Python, FFmpeg and Deno (a few minutes, needs internet) and runs the bot in the background from startup, restarting it if it crashes. If an older version is installed, it asks and replaces it (your token and playlists are kept). Manage it from **Start menu -> Discord Music Bot**.
 
-The installer isn't code-signed, so Windows may show "Windows protected your PC": click **More info -> Run anyway**.
+The installer isn't code-signed, so Windows may show "Windows protected your PC": click **More info -> Run anyway**. Smart App Control blocks it without that option: use the portable zip instead.
+
+### Windows, no installer
+
+Install Python 3.10+ (``winget install Python.Python.3.13``), unzip the portable zip anywhere, and double-click ``start.cmd``. The first time, it sets up the bot in that folder, asks for your token, and offers to install FFmpeg and Deno; then the bot runs in that window (restarted if it crashes). ``start.cmd --autostart on`` also starts it when you log in. See README.txt in the zip.
 
 ### Linux
 
@@ -186,6 +211,10 @@ sudo discord-music-bot token
 ``````
 
 It runs as the ``discord-music-bot`` systemd service: it starts on boot and restarts if it crashes. Run ``discord-music-bot`` for the other commands.
+
+### Linux, no package
+
+Install Python 3.10+ and FFmpeg (Debian/Ubuntu: ``sudo apt install python3 python3-venv ffmpeg``), extract the portable .tar.gz anywhere, and run ``./start.sh`` in that folder. The first time, it sets up the bot there, asks for your token, and offers to install Deno into ~/.deno; then the bot runs in that terminal (restarted if it crashes). ``./start.sh --autostart on`` runs it as a systemd user service instead. See README.txt in the archive.
 
 ## What's new in $Version
 

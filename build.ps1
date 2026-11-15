@@ -4,18 +4,20 @@ Build installers for the Discord music bot into the dist folder.
 
 .EXAMPLE
 .\build.ps1                      # asks which installer(s) and which version
-.\build.ps1 windows 1.0.1        # Windows Setup.exe only
-.\build.ps1 linux 1.0.1          # Linux .deb only
-.\build.ps1 all 1.0.1            # both
-.\build.ps1 all 1.0.1 -Yes       # both, and delete older installers without asking
+.\build.ps1 windows 1.0.1            # Windows Setup.exe only
+.\build.ps1 windows-portable 1.0.1   # Windows portable zip only (no installer: unzip, run start.cmd)
+.\build.ps1 linux 1.0.1              # Linux .deb only
+.\build.ps1 linux-portable 1.0.1     # Linux portable .tar.gz only (no package: extract, run ./start.sh)
+.\build.ps1 all 1.0.1                # all four
+.\build.ps1 all 1.0.1 -Yes           # all four, and delete older installers without asking
 
 Every .py file in this folder plus requirements.txt goes into the installers. Building a version that's already in
 dist overwrites it; after a successful build, older versions' installers (for the platforms just built) are deleted
-once you confirm. The Windows build needs Inno Setup (winget install JRSoftware.InnoSetup); the Linux build needs
+once you confirm. The Windows build needs Inno Setup (winget install JRSoftware.InnoSetup); the Linux builds need
 WSL with Debian or Ubuntu.
 #>
 param(
-    [ValidateSet('windows', 'linux', 'all')] [string]$Target,
+    [ValidateSet('windows', 'windows-portable', 'linux', 'linux-portable', 'all')] [string]$Target,
     [string]$Version,
     [string]$WslDistro = 'Debian',
     [switch]$Yes  # delete older installers without asking
@@ -29,8 +31,12 @@ function Fail($msg) { Write-Host "Error: $msg" -ForegroundColor Red; exit 1 }
 
 # --- What to build ---------------------------------------------------------------------------------------------
 if (-not $Target) {
-    Write-Host "Which installer do you want to build?`n  1) Windows (Setup.exe)`n  2) Linux (.deb for Debian/Ubuntu/Raspberry Pi OS)`n  3) Both"
-    $Target = switch (Read-Host 'Choose 1, 2 or 3') { '1' { 'windows' } '2' { 'linux' } '3' { 'all' } default { Fail 'Please choose 1, 2 or 3.' } }
+    Write-Host ("Which installer do you want to build?`n  1) Windows (Setup.exe)`n  2) Windows portable (zip, no installer)`n" +
+                "  3) Linux (.deb for Debian/Ubuntu/Raspberry Pi OS)`n  4) Linux portable (.tar.gz, no package)`n  5) All four")
+    $Target = switch (Read-Host 'Choose 1-5') {
+        '1' { 'windows' } '2' { 'windows-portable' } '3' { 'linux' } '4' { 'linux-portable' } '5' { 'all' }
+        default { Fail 'Please choose 1, 2, 3, 4 or 5.' }
+    }
 }
 
 $last = if (Test-Path $VersionFile) { (Get-Content $VersionFile -Raw).Trim() } else { '' }
@@ -49,10 +55,12 @@ New-Item -ItemType Directory -Force $Dist | Out-Null
 # --- Older installers in dist --------------------------------------------------------------------------------------
 # Only for the platforms being built. The same version's installer isn't "old": the build simply overwrites it.
 $installers = @{
-    windows = @{ Pattern = 'discord-music-bot-*-windows-setup.exe'; This = "discord-music-bot-$Version-windows-setup.exe" }
-    linux   = @{ Pattern = 'discord-music-bot_*_all.deb';           This = "discord-music-bot_${Version}_all.deb" }
+    'windows'          = @{ Pattern = 'discord-music-bot-*-windows-setup.exe';     This = "discord-music-bot-$Version-windows-setup.exe" }
+    'windows-portable' = @{ Pattern = 'discord-music-bot-*-windows-portable.zip';  This = "discord-music-bot-$Version-windows-portable.zip" }
+    'linux'            = @{ Pattern = 'discord-music-bot_*_all.deb';               This = "discord-music-bot_${Version}_all.deb" }
+    'linux-portable'   = @{ Pattern = 'discord-music-bot-*-linux-portable.tar.gz'; This = "discord-music-bot-$Version-linux-portable.tar.gz" }
 }
-$platforms = if ($Target -eq 'all') { 'windows', 'linux' } else { @($Target) }
+$platforms = if ($Target -eq 'all') { 'windows', 'windows-portable', 'linux', 'linux-portable' } else { @($Target) }
 $older = @(foreach ($p in $platforms) {
     Get-ChildItem $Dist -Filter $installers[$p].Pattern | Where-Object Name -ne $installers[$p].This
 })
@@ -90,20 +98,61 @@ function Build-Windows {
     Write-Host "Built $out ($([Math]::Round((Get-Item $out).Length / 1KB)) KB)" -ForegroundColor Green
 }
 
-# --- Linux -------------------------------------------------------------------------------------------------------
-function Build-Linux {
-    Write-Host "`n==> Building the Linux package $Version (in WSL $WslDistro)" -ForegroundColor Cyan
+# --- Windows portable (no installer) ------------------------------------------------------------------------------
+function Build-WindowsPortable {
+    Write-Host "`n==> Building the Windows portable zip $Version" -ForegroundColor Cyan
+    $name = "discord-music-bot-$Version-windows-portable"
+    $stage = Join-Path $env:TEMP ("dmb-portable-" + [guid]::NewGuid())
+    $folder = Join-Path $stage $name  # the zip holds this one folder, so unzipping doesn't scatter files
+    New-Item -ItemType Directory $folder | Out-Null
+    try {
+        Copy-Item (Join-Path $Root '*.py'), (Join-Path $Root 'requirements.txt'), (Join-Path $Root '.env.example') $folder
+        Copy-Item (Join-Path $Root 'portable\launcher.py'), (Join-Path $Root 'portable\windows\*') $folder
+        Set-Content (Join-Path $folder 'VERSION') $Version -NoNewline
+        # Batch files need Windows line endings; README.txt is read in Notepad.
+        Get-ChildItem $folder -Include *.cmd, *.txt -File -Recurse | ForEach-Object {
+            $text = [IO.File]::ReadAllText($_.FullName) -replace "`r?`n", "`r`n"
+            [IO.File]::WriteAllText($_.FullName, $text)
+        }
+        $out = Join-Path $Dist "$name.zip"
+        # Zip entry by entry with "/" in the paths: Windows PowerShell's Compress-Archive (and .NET's zip helpers
+        # there) write "\", which other unzip tools turn into odd file names.
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        Remove-Item $out -ErrorAction SilentlyContinue
+        $zip = [IO.Compression.ZipFile]::Open($out, 'Create')
+        try {
+            Get-ChildItem $folder -File -Recurse -Force | ForEach-Object {
+                $entry = $name + '/' + $_.FullName.Substring($folder.Length + 1).Replace('\', '/')
+                [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, $entry)
+            }
+        } finally { $zip.Dispose() }
+    } finally { Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue }
+    Write-Host "Built $out ($([Math]::Round((Get-Item $out).Length / 1KB)) KB)" -ForegroundColor Green
+}
+
+# --- Linux (both made in WSL: Linux tools set the file permissions right) ---------------------------------------------
+function Invoke-InWsl($script, $what) {
     $distros = (wsl.exe -l -q 2>$null | Out-String) -replace "`0", '' -split "`r?`n" | Where-Object { $_.Trim() }
     if ($distros -notcontains $WslDistro) {
         Fail "WSL distro '$WslDistro' not found (have: $($distros -join ', ')). Use -WslDistro <name> with a Debian or Ubuntu one."
     }
-    $script = (wsl.exe -d $WslDistro -- wslpath -a ((Join-Path $Root 'packaging\build-deb.sh') -replace '\\', '/') | Out-String).Trim()
-    wsl.exe -d $WslDistro -- bash $script $Version
-    if ($LASTEXITCODE -ne 0) { Fail 'Building the .deb failed (see the messages above).' }
+    $path = (wsl.exe -d $WslDistro -- wslpath -a ((Join-Path $Root "packaging\$script") -replace '\\', '/') | Out-String).Trim()
+    wsl.exe -d $WslDistro -- bash $path $Version
+    if ($LASTEXITCODE -ne 0) { Fail "Building the $what failed (see the messages above)." }
+}
+function Build-Linux {
+    Write-Host "`n==> Building the Linux package $Version (in WSL $WslDistro)" -ForegroundColor Cyan
+    Invoke-InWsl 'build-deb.sh' '.deb'
+}
+function Build-LinuxPortable {
+    Write-Host "`n==> Building the Linux portable .tar.gz $Version (in WSL $WslDistro)" -ForegroundColor Cyan
+    Invoke-InWsl 'build-linux-portable.sh' 'Linux portable .tar.gz'
 }
 
 if ($Target -in 'windows', 'all') { Build-Windows }
+if ($Target -in 'windows-portable', 'all') { Build-WindowsPortable }
 if ($Target -in 'linux', 'all') { Build-Linux }
+if ($Target -in 'linux-portable', 'all') { Build-LinuxPortable }
 Set-Content -Path $VersionFile -Value $Version -NoNewline
 if ($deleteOlder) {  # only reached when every build succeeded (failures exit above)
     $older | Remove-Item -Force

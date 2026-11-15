@@ -46,10 +46,12 @@ CLI logged in (`gh auth login`), plus Inno Setup and WSL like the build.
 After changing the code, build new installers with `build.ps1` (PowerShell, in this folder):
 
 ```
-.\build.ps1                    # asks: Windows, Linux or both, and the version (suggests the next one)
-.\build.ps1 windows 1.0.1      # Windows Setup.exe only
-.\build.ps1 linux 1.0.1        # Linux .deb only
-.\build.ps1 all 1.0.1          # both
+.\build.ps1                          # asks which one(s), and the version (suggests the next one)
+.\build.ps1 windows 1.0.1            # Windows Setup.exe
+.\build.ps1 windows-portable 1.0.1   # Windows portable zip (no installer)
+.\build.ps1 linux 1.0.1              # Linux .deb
+.\build.ps1 linux-portable 1.0.1     # Linux portable .tar.gz (no package)
+.\build.ps1 all 1.0.1                # all four
 ```
 
 They land in `dist/`. Always use a **higher version** than what's installed, or the upgrade does nothing; the
@@ -57,7 +59,7 @@ last version built is kept in `VERSION`. Rebuilding the same version overwrites 
 installers of older versions for the platforms you're building, the script lists them and asks whether to delete
 them once the new build succeeds (Enter = yes; add `-Yes` to skip the question). A failed build deletes nothing. Every `.py` file in this folder plus `requirements.txt` goes in, so new
 files and new packages are picked up automatically. The Windows build needs Inno Setup
-(`winget install JRSoftware.InnoSetup`); the Linux build needs WSL with Debian or Ubuntu (`-WslDistro Ubuntu` to
+(`winget install JRSoftware.InnoSetup`); the Linux builds need WSL with Debian or Ubuntu (`-WslDistro Ubuntu` to
 pick another one). Test your change on Windows first (`.venv\Scripts\python.exe bot.py`) before building.
 
 ## Install on Windows
@@ -88,6 +90,43 @@ open a new terminal, or use the full path `"C:\Program Files\Discord Music Bot\d
 `C:\Program Files\Discord Music Bot`; token, playlists and logs in `C:\ProgramData\Discord Music Bot`
 (the token file is readable only by administrators and the bot). If setup fails, its log is
 `C:\ProgramData\Discord Music Bot\install.log`; running the installer again retries.
+
+## Run on Windows without an installer (portable)
+
+For PCs where the installer can't run, for example when **Smart App Control** blocks it (it has no "Run anyway"
+button). Build `dist/discord-music-bot-<version>-windows-portable.zip` with `.\build.ps1 windows-portable` (releases
+include it), then on the other PC:
+
+1. Install Python 3.10+: `winget install Python.Python.3.13` (or python.org).
+2. Unzip the zip anywhere and double-click **`start.cmd`**. The first time it sets up the bot in that folder, asks
+   for the token (saved in `.env` there) and offers to install FFmpeg and Deno. Then the bot runs in that window and
+   restarts if it crashes. A second `start.cmd` in the same folder is refused, so two copies can't run at once.
+3. Optional: `start.cmd --autostart on` starts it when you log in (`--autostart off` undoes it).
+
+The setup logic is a Python script run by the signed Python from python.org, so Smart App Control has nothing
+of ours to block. It can still block files it doesn't recognize: FFmpeg and some code libraries in the Python
+packages are unsigned. If it does, the alternatives are turning Smart App Control off on that PC or using Linux.
+
+## Run on Linux without a package (portable)
+
+For any distro with Python 3.10+, or when you'd rather not install a package. Build
+`dist/discord-music-bot-<version>-linux-portable.tar.gz` with `.\build.ps1 linux-portable` (releases include it),
+then on the Linux machine:
+
+1. Install Python and FFmpeg, e.g. `sudo apt install python3 python3-venv ffmpeg`.
+2. Extract it anywhere (`tar -xzf discord-music-bot-<version>-linux-portable.tar.gz`) and run **`./start.sh`** in
+   that folder. The first time it sets up the bot there, asks for the token (saved in `.env`, readable only by you)
+   and offers to install Deno into `~/.deno`. Then the bot runs in that terminal and restarts if it crashes; a
+   second `./start.sh` in the same folder is refused.
+3. Optional: `./start.sh --autostart on` runs it as the systemd user service `discord-music-bot-portable`, so it
+   keeps running in the background and starts when you log in (`sudo loginctl enable-linger $USER` makes it start
+   at boot too). Log: `journalctl --user -u discord-music-bot-portable -f`. `--autostart off` undoes it.
+
+## Slash commands don't show up for other members
+
+Discord only shows slash commands to members whose roles have **Use Application Commands**. If you see them but
+others don't, turn it on: Server Settings → Roles → @everyone (or their role) → Permissions → Use Application
+Commands. They also need to be able to see and write in the channel.
 
 ## Install as a package (Debian, Ubuntu, Raspberry Pi OS 64-bit)
 
