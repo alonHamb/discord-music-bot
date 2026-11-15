@@ -31,7 +31,7 @@ quiet() {
 # --- Checks ------------------------------------------------------------------------------------------------------
 
 [[ $EUID -eq 0 ]] && die "Run this as your normal user, not root or sudo. It asks for sudo itself when needed."
-for f in bot.py matching.py streaming_links.py requirements.txt; do
+for f in bot.py matching.py platform_links.py streaming_links.py requirements.txt; do
     [[ -f "$BOT_DIR/$f" ]] || die "$f is missing. Copy the whole bot folder here first."
 done
 

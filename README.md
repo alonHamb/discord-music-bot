@@ -164,12 +164,12 @@ For Fedora and Arch, or if you'd rather not use a package. Works on 64-bit Debia
 (64-bit), Fedora and Arch. Needs about 1 GB of disk and 512 MB+ of RAM.
 
 1. **Copy the bot to the Linux machine.** Only these files are needed:
-   `bot.py`, `matching.py`, `streaming_links.py`, `requirements.txt`, `setup.sh`, plus `.env` (your token) and
+   `bot.py`, `matching.py`, `platform_links.py`, `streaming_links.py`, `requirements.txt`, `setup.sh`, plus `.env` (your token) and
    `playlists.json` (saved playlists) if you have them. Don't copy `.venv`. From Windows PowerShell, for example:
 
    ```
    ssh you@linux-machine "mkdir -p ~/discord-bot"
-   scp bot.py matching.py streaming_links.py requirements.txt setup.sh .env you@linux-machine:~/discord-bot/
+   scp bot.py matching.py platform_links.py streaming_links.py requirements.txt setup.sh .env you@linux-machine:~/discord-bot/
    ```
 
 2. **Run the setup script on the Linux machine**, as your normal user (it asks for your sudo password):

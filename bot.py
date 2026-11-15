@@ -24,6 +24,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 import matching
+import platform_links
 import streaming_links
 
 load_dotenv(os.getenv("BOT_ENV_FILE"))  # the Windows installer points this at its settings file; default: .env
@@ -210,6 +211,7 @@ class Track:
     artist: str | None = None  # Spotify/Apple Music songs: matched to the best YouTube video before playing
     song: str | None = None
     _match: asyncio.Task | None = field(default=None, repr=False, compare=False)
+    links: dict[str, str] | None = field(default=None, repr=False, compare=False)  # /playing's links, once looked up
 
     @property
     def web_url(self) -> str | None:
@@ -236,11 +238,13 @@ class Track:
 
     @property
     def length(self) -> str:
-        if not self.duration:
-            return "?:??"
-        m, s = divmod(int(self.duration), 60)
-        h, m = divmod(m, 60)
-        return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
+        return clock(self.duration) if self.duration else "?:??"
+
+
+def clock(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
 
 
 class GuildPlayer:
@@ -626,6 +630,29 @@ async def nowplaying(interaction: discord.Interaction):
     if t.web_url:
         msg += f"\n<{t.web_url}>"
     await interaction.response.send_message(msg)
+
+
+@bot.tree.command(description="Show the current song with links to it on YouTube, Spotify, Apple Music and more")
+async def playing(interaction: discord.Interaction):
+    t = bot.player(interaction.guild.id).current
+    if not t:
+        return await interaction.response.send_message("Nothing is playing.")
+    await interaction.response.defer(thinking=True)
+    if t.needs_match:  # a Spotify/Apple Music song still being matched: its YouTube video is part of the answer
+        await asyncio.wait({t.start_matching()}, timeout=10)
+    links = t.links or await platform_links.find_links(t.title, t.page_url, t.link, t.artist, t.song, t.duration)
+    if not t.needs_match:  # once matched, the links don't change: look them up only once per song
+        t.links = links
+
+    vc = interaction.guild.voice_client
+    source = vc.source if vc else None
+    audio = source.original if isinstance(source, discord.PCMVolumeTransformer) else None
+    position = f"{clock(audio.played_seconds)} / " if isinstance(audio, BufferedAudio) else ""
+    paused = " (paused)" if vc and vc.is_paused() else ""
+    lines = [f"🎶 **{t.title}**", f"{position}{t.length}{paused} — requested by {t.requested_by}"]
+    if links:
+        lines.append(" · ".join(f"[{name}](<{url}>)" for name, url in links.items()))
+    await interaction.followup.send("\n".join(lines))
 
 
 @bot.tree.command(description="Set volume (0-200, default 100)")
