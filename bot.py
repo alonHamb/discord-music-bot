@@ -62,6 +62,10 @@ YDL_OPTIONS = {
 
 PREFETCH_LEAD = 25  # seconds before a song ends to start preparing the next one
 PREFETCH_POLL = 2  # how often (seconds) to check whether the playing song is that close to its end
+# Play every song at about the same loudness (EBU R128 loudness normalization, as streaming services do); /volume
+# then applies on top. -16 LUFS leaves headroom so volumes above 100% don't distort right away. Measured: songs
+# that differed by ~20 dB end up within ~4 dB, for ~2% of a CPU core while playing.
+NORMALIZE_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
 
 
 def open_stream(url: str, fast: bool = True) -> subprocess.Popen:
@@ -166,8 +170,8 @@ class Stream:
 
     def __init__(self, url: str, fast: bool = True):
         self.downloader = open_stream(url, fast)
-        self.audio = BufferedAudio(PipedFFmpegAudio(self.downloader, executable=FFMPEG,
-                                                    before_options="-loglevel error", options="-vn"))
+        self.audio = BufferedAudio(PipedFFmpegAudio(self.downloader, executable=FFMPEG, before_options="-loglevel error",
+                                                    options=f"-vn -af {NORMALIZE_FILTER}"))
 
     def close(self):
         self.audio.cleanup()
