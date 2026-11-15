@@ -100,9 +100,7 @@ switch ($Command) {
         $secure = Read-Host 'Paste the bot token (hidden while typing)' -AsSecureString
         $token = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)).Trim()
         if ($token.Length -lt 50) { Write-Host "That doesn't look like a bot token (too short). Nothing changed." -ForegroundColor Red; Done 1 }
-        $guild = (Read-Host 'Your server ID for instant command updates (optional, press Enter to skip)').Trim()
         Set-Setting DISCORD_TOKEN $token
-        Set-Setting GUILD_ID $guild
         Stop-Bot; Start-Bot -Wait; Done
     }
     'set-setting' { Set-Setting $Rest[0] ($Rest[1..($Rest.Count)] -join ' ').Trim() }  # used by the installer
@@ -144,7 +142,7 @@ switch ($Command) {
         @"
 Usage: discord-music-bot <command>
 
-  token          set the bot token (and optional server ID), then start the bot
+  token          set the bot token, then start the bot
   logs           follow the bot's live log (Ctrl+C to quit)
   status         show whether the bot is running
   restart        restart the bot

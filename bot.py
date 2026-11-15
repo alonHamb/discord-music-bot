@@ -28,7 +28,7 @@ import streaming_links
 
 load_dotenv(os.getenv("BOT_ENV_FILE"))  # the Windows installer points this at its settings file; default: .env
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID")  # optional: syncs commands to one server instantly
+GUILD_ID = os.getenv("GUILD_ID")  # optional: a server whose old server-only command copies get cleared
 
 
 def find_exe(name: str) -> str | None:
@@ -369,12 +369,14 @@ class MusicBot(discord.Client):
         self.players: dict[int, GuildPlayer] = {}
 
     async def setup_hook(self):
+        # Register the commands globally, for every server the bot is in (Discord applies changes within moments).
+        await self.tree.sync()
         if GUILD_ID:
+            # Older versions also registered a copy just in this server, so members saw every command twice.
+            # Clear that copy (a no-op once it's gone).
             guild = discord.Object(id=int(GUILD_ID))
-            self.tree.copy_global_to(guild=guild)
+            self.tree.clear_commands(guild=guild)
             await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
 
     def player(self, guild_id: int) -> GuildPlayer:
         return self.players.setdefault(guild_id, GuildPlayer())

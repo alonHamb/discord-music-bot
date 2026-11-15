@@ -2,7 +2,7 @@
 # Puts a private Python, FFmpeg and Deno inside the install folder, installs the bot's packages, locks down the
 # settings, and registers a scheduled task that runs the bot in the background from boot as LOCAL SERVICE.
 param(
-    [string]$TokenFile  # optional: file with the token on line 1 and the server ID on line 2 (deleted after reading)
+    [string]$TokenFile  # optional: file with the token on its first line (deleted after reading)
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest is very slow with its progress bar
@@ -67,17 +67,17 @@ try {
     Step 'Preparing the settings folder'
     if (-not (Test-Path $EnvFile)) {
         $template = "# Discord music bot settings. Set the token with:  discord-music-bot token`r`nDISCORD_TOKEN=`r`n" +
-                    "# Optional: your server ID, so new slash commands appear instantly`r`nGUILD_ID=`r`n"
+                    "# Optional, only if a version before 1.0.5 ran with a server ID here: keep it, so the duplicate`r`n" +
+                    "# commands that version registered in that server get removed`r`nGUILD_ID=`r`n"
         [IO.File]::WriteAllText($EnvFile, $template, (New-Object Text.UTF8Encoding $false))
     }
     Run icacls $Data /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-19:(OI)(CI)M' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
     Run icacls $EnvFile /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' '*S-1-5-19:R' | Out-Null
 
     if ($TokenFile -and (Test-Path $TokenFile)) {
-        $lines = @(Get-Content $TokenFile) + @('', '')
+        $token = "$(Get-Content $TokenFile -TotalCount 1)".Trim()
         Remove-Item $TokenFile -Force
-        & (Join-Path $App 'manage.ps1') set-setting DISCORD_TOKEN $lines[0].Trim()
-        & (Join-Path $App 'manage.ps1') set-setting GUILD_ID $lines[1].Trim()
+        & (Join-Path $App 'manage.ps1') set-setting DISCORD_TOKEN $token
     }
 
     # --- Python: the official "embeddable" build, private to this folder ------------------------------------------

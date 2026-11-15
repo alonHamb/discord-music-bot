@@ -25,10 +25,7 @@ case "${1:-help}" in
         printf "Paste the bot token (hidden while typing): "
         stty -echo 2>/dev/null || true; read -r token; stty echo 2>/dev/null || true; echo
         [ "${#token}" -ge 50 ] || { echo "That doesn't look like a bot token (too short). Nothing changed."; exit 1; }
-        printf "Your server ID for instant command updates (optional, press Enter to skip): "
-        read -r guild_id
         set_setting DISCORD_TOKEN "$token"
-        set_setting GUILD_ID "$guild_id"
         systemctl enable "$SERVICE" >/dev/null 2>&1
         started_at=$(date '+%Y-%m-%d %H:%M:%S')
         systemctl restart "$SERVICE"
@@ -65,7 +62,7 @@ case "${1:-help}" in
         cat <<EOF
 Usage: sudo discord-music-bot <command>
 
-  token          set the bot token (and optional server ID), then start the bot
+  token          set the bot token, then start the bot
   logs           follow the bot's live log (Ctrl+C to quit)
   status         show whether the bot is running
   restart        restart the bot

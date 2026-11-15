@@ -103,8 +103,8 @@ else
     echo "Get it from https://discord.com/developers/applications -> your app -> Bot -> Reset Token."
     read -rsp "Paste the bot token (hidden while typing): " token; echo
     [[ ${#token} -ge 50 ]] || die "That doesn't look like a bot token (too short). Run this script again to retry."
-    read -rp "Your server ID for instant command updates (optional, press Enter to skip): " guild_id
-    printf 'DISCORD_TOKEN=%s\nGUILD_ID=%s\n' "$token" "$guild_id" > .env
+    { grep -v '^DISCORD_TOKEN=' .env 2>/dev/null || true; printf 'DISCORD_TOKEN=%s\n' "$token"; } > .env.new
+    mv .env.new .env
 fi
 chmod 600 .env  # only you can read the token
 

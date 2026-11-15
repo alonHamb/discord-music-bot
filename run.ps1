@@ -67,8 +67,7 @@ if ("$token".Trim().Length -lt 50) {
     $secure = Read-Host 'Paste the bot token (hidden while typing)' -AsSecureString
     $token = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)).Trim()
     if ($token.Length -lt 50) { Fail "That doesn't look like a bot token (too short)." }
-    $guild = (Read-Host 'Your server ID for instant command updates (optional, press Enter to skip)').Trim()
-    $lines = @($lines | Where-Object { $_ -notmatch '^(DISCORD_TOKEN|GUILD_ID)=' }) + "DISCORD_TOKEN=$token" + "GUILD_ID=$guild"
+    $lines = @($lines | Where-Object { $_ -notmatch '^DISCORD_TOKEN=' }) + "DISCORD_TOKEN=$token"
     [IO.File]::WriteAllLines($EnvFile, $lines, (New-Object Text.UTF8Encoding $false))
     Write-Host 'Saved in .env (Git ignores this file, so the token stays private).'
 }

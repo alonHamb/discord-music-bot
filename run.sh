@@ -44,8 +44,7 @@ if (( ${#token} < 50 )); then
     echo "Get it from https://discord.com/developers/applications -> your app -> Bot -> Reset Token."
     read -rsp "Paste the bot token (hidden while typing): " token; echo
     (( ${#token} >= 50 )) || die "That doesn't look like a bot token (too short)."
-    read -rp "Your server ID for instant command updates (optional, press Enter to skip): " guild
-    { grep -vE '^(DISCORD_TOKEN|GUILD_ID)=' .env || true; printf 'DISCORD_TOKEN=%s\nGUILD_ID=%s\n' "$token" "$guild"; } > .env.new
+    { grep -v '^DISCORD_TOKEN=' .env || true; printf 'DISCORD_TOKEN=%s\n' "$token"; } > .env.new
     mv .env.new .env
     echo "Saved in .env (Git ignores this file, so the token stays private)."
 fi

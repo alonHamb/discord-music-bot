@@ -166,7 +166,6 @@ begin
     'Get it from https://discord.com/developers/applications -> your app -> Bot -> Reset Token.' + #13#10 +
     'You can leave this empty and set it later from Start menu -> Discord Music Bot -> Set bot token.');
   TokenPage.Add('Bot token:', True);
-  TokenPage.Add('Server ID (optional, makes new slash commands appear instantly):', False);
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -212,7 +211,7 @@ begin
   begin
     // Handed over in a file inside Setup's private temp folder, which install.ps1 deletes after reading.
     TokenFile := ExpandConstant('{tmp}\token.txt');
-    SaveStringToFile(TokenFile, Trim(TokenPage.Values[0]) + #13#10 + Trim(TokenPage.Values[1]) + #13#10, False);
+    SaveStringToFile(TokenFile, Trim(TokenPage.Values[0]) + #13#10, False);
     Args := Args + ' -TokenFile "' + TokenFile + '"';
   end;
   WizardForm.StatusLabel.Caption := 'Downloading Python, FFmpeg and Deno and setting up the bot (a few minutes)...';
