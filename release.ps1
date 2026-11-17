@@ -7,12 +7,15 @@ Publish a new version as a GitHub release in one step. Start it with release.cmd
      release, the GitHub CLI is logged in.
   2. Sets VERSION, commits it, and tags v<version>.
   3. Builds the Windows installer, the Linux package and the portable versions of both from that tag, in a clean
-     folder (nothing local gets in).
+     folder (nothing local gets in), and copies them to dist.
   4. Checks the installers for private information: your bot token and server ID, your real email addresses,
      your user folder and your PC's name (all read from this PC at run time).
   5. Shows a summary and asks before publishing. If you say no, or anything fails before publishing, the commit
      and tag are undone.
   6. Pushes the commit and tag, creates the GitHub release with notes and checksums, and checks the downloads.
+
+If a previous run tagged a version but never published it (e.g. it failed after pushing), it offers to finish
+that version instead of starting a new one.
 
 Needs Inno Setup and WSL with Debian or Ubuntu (like build.ps1), and the GitHub CLI (gh) logged in.
 
@@ -70,6 +73,18 @@ $behind = [int](RunGit @('rev-list', '--count', 'HEAD..origin/main'))
 if ($behind) { Fail "GitHub has $behind commit(s) that this PC doesn't. Get them first:  git pull" }
 
 $tags = @(RunGit @('tag', '-l', 'v*') | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } | Sort-Object { VersionKey $_.Substring(1) })
+# An unfinished release: the newest tag is only on this PC, has no GitHub release, and its commit is already on
+# GitHub (e.g. a run that pushed main, then failed). Offer to finish it instead of starting a new version.
+$Resume = $false
+$newest = $tags | Select-Object -Last 1
+if ($newest -and -not (RunGit @('ls-remote', '--tags', 'origin', $newest)) -and -not (Quiet { gh release view $newest --repo $repo }) -and
+    (Quiet { git merge-base --is-ancestor "refs/tags/$newest" origin/main }) -and (-not $Version -or "v$Version" -eq $newest)) {
+    Write-Host "$newest was tagged but never published (no GitHub release)." -ForegroundColor Yellow
+    if ("$(Read-Host "Finish releasing $newest now? [Y/n]")".Trim() -notmatch '^(n|no)$') {
+        $Resume = $true; $Version = $newest.Substring(1)
+        $tags = @($tags | Where-Object { $_ -ne $newest })  # "last release" = the one before it
+    }
+}
 $lastTag = $tags | Select-Object -Last 1
 $last = if ($lastTag) { $lastTag.Substring(1) } else { '' }
 if (-not $Version) {
@@ -79,9 +94,11 @@ if (-not $Version) {
 }
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { Fail "Version must look like 1.2.3 (got '$Version')." }
 $Tag = "v$Version"
-if ($tags -contains $Tag -or (RunGit @('ls-remote', '--tags', 'origin', $Tag))) { Fail "$Tag already exists. Pick a higher version." }
-if ($last -and (VersionKey $Version) -le (VersionKey $last)) { Fail "$Version isn't higher than the last release ($last)." }
-Write-Host "Releasing $Version (last release: $(if ($last) { $last } else { 'none' }))$(if ($DryRun) { ' - DRY RUN, nothing will be published' })"
+if (-not $Resume) {
+    if ($tags -contains $Tag -or (RunGit @('ls-remote', '--tags', 'origin', $Tag))) { Fail "$Tag already exists. Pick a higher version." }
+    if ($last -and (VersionKey $Version) -le (VersionKey $last)) { Fail "$Version isn't higher than the last release ($last)." }
+}
+Write-Host "$(if ($Resume) { 'Finishing' } else { 'Releasing' }) $Version (last release: $(if ($last) { $last } else { 'none' }))$(if ($DryRun) { ' - DRY RUN, nothing will be published' })"
 
 # --- 2. Version commit and tag (undone if we stop before publishing) ----------------------------------------------
 $startCommit = RunGit @('rev-parse', 'HEAD')
@@ -94,15 +111,19 @@ function Undo {  # safe to call more than once
 }
 
 try {
-    Step "Setting VERSION to $Version and tagging $Tag"
-    if ((Get-Content (Join-Path $Root 'VERSION') -Raw).Trim() -ne $Version) {
-        [IO.File]::WriteAllText((Join-Path $Root 'VERSION'), $Version)
-        RunGit @('add', 'VERSION') | Out-Null
-        RunGit @('commit', '-q', '-m', "Release $Version") | Out-Null
-        $script:madeCommit = $true
+    if ($Resume) {
+        Step "Using the existing tag $Tag (its commit is already on GitHub)"
+    } else {
+        Step "Setting VERSION to $Version and tagging $Tag"
+        if ((Get-Content (Join-Path $Root 'VERSION') -Raw).Trim() -ne $Version) {
+            [IO.File]::WriteAllText((Join-Path $Root 'VERSION'), $Version)
+            RunGit @('add', 'VERSION') | Out-Null
+            RunGit @('commit', '-q', '-m', "Release $Version") | Out-Null
+            $script:madeCommit = $true
+        }
+        RunGit @('tag', '-a', $Tag, '-m', "Release $Version") | Out-Null
+        $script:madeTag = $true
     }
-    RunGit @('tag', '-a', $Tag, '-m', "Release $Version") | Out-Null
-    $script:madeTag = $true
 
     # --- 3. Build from the tag ------------------------------------------------------------------------------------
     Step "Building the installers from $Tag (in a clean folder)"
@@ -172,6 +193,13 @@ try {
     }
     if ($leaks) { throw "Private information found, nothing was published:`n  $($leaks -join "`n  ")" }
     Write-Host "Clean: checked for $($secrets.Count) private items ($((($secrets.Keys) -join ', ')))."
+
+    # Every release run leaves its fresh builds in dist, even if you don't publish (older versions are only
+    # deleted after publishing).
+    $dist = Join-Path $Root 'dist'
+    New-Item -ItemType Directory -Force $dist | Out-Null
+    $files | Copy-Item -Destination $dist -Force
+    Write-Host "Copied the $($files.Count) installers to dist."
 
     # --- 5. Release notes, summary, confirmation -----------------------------------------------------------------
     $range = if ($lastTag) { "refs/tags/$lastTag..refs/tags/$Tag" } else { "refs/tags/$Tag" }
@@ -246,7 +274,7 @@ $sums
 
     # --- 6. Publish ------------------------------------------------------------------------------------------------
     Step 'Pushing the commit and tag'
-    RunGit @('push', '-q', 'origin', 'refs/heads/main:refs/heads/main') | Out-Null
+    if (-not $Resume) { RunGit @('push', '-q', 'origin', 'refs/heads/main:refs/heads/main') | Out-Null }
     $published = $true  # from here on, don't undo: the commit is on GitHub
     RunGit @('push', '-q', 'origin', "refs/tags/$Tag") | Out-Null
 
@@ -261,10 +289,7 @@ $sums
         $ok = ($LASTEXITCODE -eq 0) -and ((Get-FileHash "$work\check-$($f.Name)").Hash -eq (Get-FileHash $f.FullName).Hash)
         Write-Host "  $($f.Name): $(if ($ok) { 'OK' } else { 'MISMATCH - check the release page' })"
     }
-    $dist = Join-Path $Root 'dist'
-    New-Item -ItemType Directory -Force $dist | Out-Null
-    $files | Copy-Item -Destination $dist -Force
-    Write-Host "`nReleased: https://github.com/$repo/releases/tag/$Tag  (installers also copied to dist)" -ForegroundColor Green
+    Write-Host "`nReleased: https://github.com/$repo/releases/tag/$Tag  (installers also in dist)" -ForegroundColor Green
     Remove-OlderInstallers $dist @($files.Name)
 }
 catch {
