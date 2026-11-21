@@ -6,6 +6,7 @@ private-strings.txt
 
 # Data the bot creates while running
 playlists.json
+state.json
 setup.log
 
 # Rebuilt automatically

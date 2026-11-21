@@ -10,6 +10,7 @@ import os
 import queue
 import random
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -107,8 +108,9 @@ class BufferedAudio(discord.AudioSource):
     it sped up. So playback only starts once audio is buffered (wait_ready), and the buffer rides out short stalls.
     """
 
-    def __init__(self, inner: discord.AudioSource, ahead: int = 250):
+    def __init__(self, inner: discord.AudioSource, ahead: int = 250, start: float = 0):
         self._inner = inner
+        self.start = start  # where in the song the audio begins (seconds), when resuming partway through
         self._frames: queue.Queue[bytes] = queue.Queue(maxsize=ahead)
         self._stop = threading.Event()
         self._ended = threading.Event()
@@ -118,7 +120,7 @@ class BufferedAudio(discord.AudioSource):
 
     @property
     def played_seconds(self) -> float:
-        return self.frames_out * 0.02
+        return self.start + self.frames_out * 0.02
 
     @property
     def failed(self) -> bool:
@@ -169,10 +171,13 @@ class BufferedAudio(discord.AudioSource):
 class Stream:
     """A song being downloaded and decoded (yt-dlp -> FFmpeg -> buffer), ready to hand to Discord."""
 
-    def __init__(self, url: str, fast: bool = True):
+    def __init__(self, url: str, fast: bool = True, start: float = 0):
         self.downloader = open_stream(url, fast)
+        # Starting partway (resuming after a restart): FFmpeg reads the song from the beginning and drops the audio
+        # before `start`, since a pipe can't seek.
+        skip = f"-ss {start:.2f} " if start else ""
         self.audio = BufferedAudio(PipedFFmpegAudio(self.downloader, executable=FFMPEG, before_options="-loglevel error",
-                                                    options=f"-vn -af {NORMALIZE_FILTER}"))
+                                                    options=f"-vn {skip}-af {NORMALIZE_FILTER}"), start=start)
 
     def close(self):
         self.audio.cleanup()
@@ -183,12 +188,13 @@ class Stream:
         """Match the song if needed, start it, and wait until 1 s of audio is ready."""
         if track.needs_match:
             await track.start_matching()
-        stream = cls(track.page_url)
+        start = track.resume_at
+        stream = cls(track.page_url, start=start)
         await asyncio.to_thread(stream.audio.wait_ready)
         if stream.audio.failed:  # the fast way got nothing (YouTube hiccup): retry the usual, slower way
             stream.close()
             print(f"Fast start failed for {track.title!r}; retrying the slower way.")
-            stream = cls(track.page_url, fast=False)
+            stream = cls(track.page_url, fast=False, start=start)
             await asyncio.to_thread(stream.audio.wait_ready)
         return stream
 
@@ -212,6 +218,7 @@ class Track:
     song: str | None = None
     _match: asyncio.Task | None = field(default=None, repr=False, compare=False)
     links: dict[str, str] | None = field(default=None, repr=False, compare=False)  # /playing's links, once looked up
+    resume_at: float = field(default=0, repr=False, compare=False)  # start here (seconds): continuing after a restart
 
     @property
     def web_url(self) -> str | None:
@@ -262,6 +269,7 @@ class GuildPlayer:
         self.prefetched: tuple[Track, asyncio.Task] | None = None  # the next song, being prepared ahead of time
         self.channel: discord.abc.Messageable | None = None  # where songs were last queued from: "Now playing" goes here
         self.announced: Track | None = None  # the last song announced, so a replay or looped song isn't announced again
+        self.resume_paused = False  # continuing a song that was paused before a restart: start it paused
 
     def reset(self):
         # Clearing current first keeps the after-callback from looping it back in.
@@ -382,6 +390,8 @@ class MusicBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.players: dict[int, GuildPlayer] = {}
+        self.shutting_down = False
+        self.restored = False
 
     async def setup_hook(self):
         # Register the commands globally, for every server the bot is in (Discord applies changes within moments).
@@ -392,11 +402,25 @@ class MusicBot(discord.Client):
             guild = discord.Object(id=int(GUILD_ID))
             self.tree.clear_commands(guild=guild)
             await self.tree.sync(guild=guild)
+        # Save what's playing when asked to stop (systemd, Ctrl+C), so the next start continues where it left off.
+        for name in ("SIGTERM", "SIGINT", "SIGBREAK"):
+            if hasattr(signal, name):
+                signal.signal(getattr(signal, name), lambda *_: self.loop.call_soon_threadsafe(self.shut_down))
+
+    def shut_down(self):
+        if self.shutting_down:
+            return
+        save_state()  # first: closing the connection ends the songs
+        self.shutting_down = True
+        print("Shutting down; saved what was playing.")
+        asyncio.create_task(self.close())
 
     def player(self, guild_id: int) -> GuildPlayer:
         return self.players.setdefault(guild_id, GuildPlayer())
 
     def play_next(self, guild: discord.Guild):
+        if self.shutting_down:  # the song stopped because we're shutting down: keep the queue as it was saved
+            return
         player = self.player(guild.id)
         finished, player.current = player.current, None
         if finished:
@@ -444,6 +468,10 @@ class MusicBot(discord.Client):
             self.loop.call_soon_threadsafe(self.play_next, guild)
 
         guild.voice_client.play(discord.PCMVolumeTransformer(stream.audio, volume=player.volume), after=after)
+        track.resume_at = 0  # a replay or loop starts from the beginning
+        if player.resume_paused:
+            player.resume_paused = False
+            guild.voice_client.pause()
         asyncio.create_task(self._prefetch_near_end(guild, track, stream.audio))
         if player.announced is not track:
             player.announced = track
@@ -474,10 +502,102 @@ class MusicBot(discord.Client):
 bot = MusicBot()
 
 
+# What's playing in each server, saved every few seconds and on shutdown, so a restart (or a crash) continues
+# the same songs from the same spot. Kept next to playlists.json.
+STATE_FILE = PLAYLISTS_FILE.with_name("state.json")
+STATE_SAVE_EVERY = 5  # seconds
+STATE_MAX_AGE = 3600  # seconds: after a longer break, start fresh instead of suddenly playing again
+last_saved_state: str | None = None
+
+
+def playback_state() -> dict:
+    guilds = {}
+    for guild in bot.guilds:
+        player, vc = bot.players.get(guild.id), guild.voice_client
+        if not player or not player.current or not vc or not vc.channel:
+            continue
+        source = vc.source
+        audio = source.original if isinstance(source, discord.PCMVolumeTransformer) else None
+        playing = isinstance(audio, BufferedAudio) and (vc.is_playing() or vc.is_paused())
+        guilds[str(guild.id)] = {
+            "voice_channel": vc.channel.id,
+            "text_channel": getattr(player.channel, "id", None),
+            "position": round(audio.played_seconds if playing else player.current.resume_at, 2),
+            "paused": vc.is_paused() or (not playing and player.resume_paused),
+            "loop": player.loop,
+            "volume": player.volume,
+            "tracks": [dict(track_to_dict(t), requested_by=t.requested_by) for t in [player.current, *player.queue]],
+        }
+    return guilds
+
+
+def save_state():
+    global last_saved_state
+    text = json.dumps(playback_state(), ensure_ascii=False)
+    if text == last_saved_state:
+        return
+    try:
+        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"saved_at": time.time(), "guilds": json.loads(text)}, indent=1, ensure_ascii=False), "utf-8")
+        tmp.replace(STATE_FILE)
+        last_saved_state = text
+    except OSError as e:
+        print(f"Couldn't save the playback state to {STATE_FILE}: {e!r}")
+
+
+async def keep_saving_state():
+    while not bot.shutting_down:
+        save_state()
+        await asyncio.sleep(STATE_SAVE_EVERY)
+
+
+async def restore_state():
+    """Rejoin each voice channel that was playing and continue the song where it was, with the rest of the queue."""
+    try:
+        saved = json.loads(STATE_FILE.read_text("utf-8")) if STATE_FILE.exists() else {}
+    except (OSError, ValueError) as e:
+        print(f"Couldn't read the saved playback state ({e!r}); starting fresh.")
+        return
+    if time.time() - saved.get("saved_at", 0) > STATE_MAX_AGE:
+        return
+    for guild_id, st in saved.get("guilds", {}).items():
+        guild = bot.get_guild(int(guild_id))
+        channel = guild.get_channel(st["voice_channel"]) if guild else None
+        if not channel or not any(not m.bot for m in channel.members):
+            continue  # gone, or nobody's listening anymore
+        try:
+            tracks = [track_from_dict(d, d.get("requested_by") or "someone") for d in st["tracks"]]
+            if not tracks:
+                continue
+            text_channel = guild.get_channel(st["text_channel"]) if st.get("text_channel") else None
+
+            async def send(msg: str, text_channel=text_channel):
+                if text_channel:
+                    await text_channel.send(msg)
+
+            if await join_voice(channel, send) is None:
+                continue
+            player = bot.player(guild.id)
+            player.queue = deque(tracks)
+            player.loop, player.volume, player.channel = st.get("loop", "off"), st.get("volume", 1.0), text_channel
+            player.resume_paused = st.get("paused", False)
+            tracks[0].resume_at = max(0.0, st.get("position", 0) - 1)  # a second of overlap, so nothing is missed
+            player.announced = tracks[0]  # it's continuing, not starting: no "Now playing" message
+            bot.play_next(guild)
+            print(f"Continuing {tracks[0].title!r} at {clock(tracks[0].resume_at)} in {guild.name} "
+                  f"({len(tracks) - 1} more queued).")
+        except Exception as e:
+            print(f"Couldn't continue playing in {guild.name}: {e!r}")
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (id {bot.user.id})")
     print(f"ffmpeg: {FFMPEG or 'NOT FOUND'} | deno: {DENO or 'NOT FOUND'}")
+    if not bot.restored:  # on_ready also runs after every reconnect: restore only once
+        bot.restored = True
+        await restore_state()
+        asyncio.create_task(keep_saving_state())
 
 
 @bot.tree.error

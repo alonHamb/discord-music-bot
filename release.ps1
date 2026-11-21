@@ -177,7 +177,7 @@ try {
     try {  # every file in the zip, plus the file names themselves (e.g. a stray .env)
         $texts[$zip.Name] = ($archive.Entries | ForEach-Object {
             $_.FullName; $r = New-Object IO.StreamReader($_.Open()); try { $r.ReadToEnd() } finally { $r.Dispose() } }) -join "`n"
-        $private = @($archive.Entries | Where-Object { $_.Name -in '.env', 'playlists.json', 'private-strings.txt' })
+        $private = @($archive.Entries | Where-Object { $_.Name -in '.env', 'playlists.json', 'state.json', 'private-strings.txt' })
         if ($private) { throw "$($zip.Name) contains private files: $($private.FullName -join ', ')" }
     } finally { $archive.Dispose() }
     $tgz = $files | Where-Object Name -like '*.tar.gz'
@@ -186,7 +186,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Couldn't unpack $($tgz.Name) to check it." }
     $tgzFiles = @(Get-ChildItem $untar -Recurse -File -Force)
     $texts[$tgz.Name] = ($tgzFiles | ForEach-Object { $_.FullName.Substring($untar.Length); [IO.File]::ReadAllText($_.FullName) }) -join "`n"
-    $private = @($tgzFiles | Where-Object { $_.Name -in '.env', 'playlists.json', 'private-strings.txt' })
+    $private = @($tgzFiles | Where-Object { $_.Name -in '.env', 'playlists.json', 'state.json', 'private-strings.txt' })
     if ($private) { throw "$($tgz.Name) contains private files: $($private.Name -join ', ')" }
     $leaks = foreach ($f in $texts.Keys) {
         foreach ($s in $secrets.Keys) { if ($texts[$f].IndexOf($secrets[$s], [StringComparison]::OrdinalIgnoreCase) -ge 0) { "$f contains $s" } }

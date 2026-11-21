@@ -3,6 +3,11 @@
 Plays YouTube, SoundCloud, Spotify and Apple Music links (Spotify/Apple songs are matched to YouTube) with a queue,
 loop, shuffle and saved playlists. Type `/help` in Discord for the command list.
 
+If the bot restarts (an upgrade, a reboot, a crash), it comes back to the same voice channel and continues the song
+where it was, with the same queue, loop and volume. It saves what's playing in `state.json`, next to
+`playlists.json`, every few seconds and when it's stopped. It skips this if nobody is left in the channel or it was
+off for over an hour.
+
 ## Run it from this folder (development)
 
 No installer or package needed. In this folder:
