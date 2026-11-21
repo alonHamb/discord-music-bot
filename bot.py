@@ -703,6 +703,8 @@ async def enqueue(guild: discord.Guild, send, tracks: list[Track], playlist: str
     elif not starting:
         await send(f"Queued **{tracks[0].title}** ({tracks[0].length}) at position {len(player.queue)}.")
     if starting and player.current:
+        if player.current.needs_match:  # wait (briefly) for its YouTube video, so the message can show it
+            await asyncio.wait({player.current.start_matching()}, timeout=10)
         await send(now_playing_text(player.current))
 
 
@@ -845,11 +847,21 @@ async def show_queue(interaction: discord.Interaction):
     await interaction.response.send_message("\n".join(lines))
 
 
+def youtube_url(t: Track) -> str | None:
+    """The YouTube video being played, if it is one (Spotify/Apple Music songs once matched)."""
+    m = platform_links.YOUTUBE_ID_RE.search(t.page_url)
+    return f"https://www.youtube.com/watch?v={m.group(1)}" if m else None
+
+
 def now_playing_text(t: Track) -> str:
-    """The song line shown by /nowplaying and when a song starts."""
+    """The song line shown by /nowplaying and when a song starts. The YouTube link is left bare so Discord shows
+    the video's player under the message; other links stay in <> so they add no preview of their own."""
     msg = f"**{t.title}** ({t.length}), requested by {t.requested_by}"
-    if t.web_url:
+    yt = youtube_url(t)
+    if t.web_url and (not yt or t.link):
         msg += f"\n<{t.web_url}>"
+    if yt:
+        msg += f"\n{yt}"
     return msg
 
 
@@ -880,7 +892,9 @@ async def playing(interaction: discord.Interaction):
     paused = " (paused)" if vc and vc.is_paused() else ""
     lines = [f"**{t.title}**", f"{position}{t.length}{paused}, requested by {t.requested_by}"]
     if links:
-        lines.append(" · ".join(f"[{name}](<{url}>)" for name, url in links.items()))
+        # Only the YouTube link is left bare, so Discord shows the video's player under the message.
+        lines.append(" · ".join(f"[{name}]({url})" if name == "YouTube" else f"[{name}](<{url}>)"
+                                for name, url in links.items()))
     await interaction.followup.send("\n".join(lines))
 
 
