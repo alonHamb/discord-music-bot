@@ -130,16 +130,16 @@ Commands. They also need to be able to see and write in the channel.
 
 ## Nickname commands
 
-Renaming the bot to a nickname that starts with `!` runs a command, then the bot puts its nickname back:
-`!play <song>`, `!skip`, `!replay`, `!pause`, `!resume`, `!stop`, `!shuffle`, `!loop song|queue|off`,
-`!volume 0-200`, `!leave`. It answers in the voice channel's chat (or the server's main channel). Nicknames that
-don't start with `!` are left alone.
+Renaming the bot to a nickname that starts with `/` runs a command, then the bot puts its nickname back:
+`/play <song>`, `/skip`, `/replay`, `/pause`, `/resume`, `/stop`, `/shuffle`, `/loop song|queue|off`,
+`/volume 0-200`, `/leave`. It answers in the voice channel's chat (or the server's main channel). Nicknames that
+don't start with `/` are left alone.
 
 - Only people who can rename the bot can use them: **Manage Nicknames**, with a role above the bot's role.
 - The bot needs **Change Nickname** to put its name back.
-- With **View Audit Log** it also knows who renamed it, so `!play` can join that person's voice channel. Without
-  it, `!play` only works while the bot is already in voice.
-- Nicknames are at most 32 characters, so `!play` takes short searches, not long links.
+- With **View Audit Log** it also knows who renamed it, so `/play` can join that person's voice channel. Without
+  it, `/play` only works while the bot is already in voice.
+- Nicknames are at most 32 characters, so `/play` takes short searches, not long links.
 
 ## Install as a package (Debian, Ubuntu, Raspberry Pi OS 64-bit)
 

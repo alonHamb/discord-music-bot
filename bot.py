@@ -886,10 +886,10 @@ async def show_help(interaction: discord.Interaction):
     await interaction.response.send_message("**Music commands**\n" + "\n".join(lines), ephemeral=True)
 
 
-# Nickname commands: rename the bot to "!skip", "!play lofi", "!volume 50"... and it runs the command, then puts its
+# Nickname commands: rename the bot to "/skip", "/play lofi", "/volume 50"... and it runs the command, then puts its
 # nickname back. Only people allowed to change the bot's nickname (Manage Nicknames, with a role above the bot's)
-# can do this. With View Audit Log the bot also knows who renamed it: needed for "!play" when it isn't in voice yet.
-NICK_PREFIX = "!"
+# can do this. With View Audit Log the bot also knows who renamed it: needed for "/play" when it isn't in voice yet.
+NICK_PREFIX = "/"
 NICK_COMMANDS = "play <song>, skip, replay, pause, resume, stop, shuffle, loop <song|queue|off>, volume <0-200>, leave"
 LOOP_WORDS = {"song": "track", "track": "track", "one": "track", "queue": "queue", "all": "queue", "off": "off"}
 home_nicks: dict[int, str | None] = {}  # per server: the bot's real nickname, to put back after a command
@@ -956,17 +956,17 @@ async def on_member_update(before: discord.Member, after: discord.Member):
             await send(await do_leave(guild))
         elif name == "volume":
             if not arg.isdigit() or not 0 <= int(arg) <= 200:
-                return await send("Give a volume from 0 to 200, like `!volume 50`.")
+                return await send("Give a volume from 0 to 200, like `/volume 50`.")
             await send(do_volume(guild, int(arg)))
         elif name == "loop":
             mode = LOOP_WORDS.get(arg.lower())
             if not mode:
-                return await send("Loop what? Use `!loop song`, `!loop queue` or `!loop off`.")
+                return await send("Loop what? Use `/loop song`, `/loop queue` or `/loop off`.")
             bot.player(guild.id).loop = mode
             await send(LOOP_LABELS[mode] + ".")
         elif name == "play":
             if not arg:
-                return await send("Play what? Like `!play never gonna give you up`.")
+                return await send("Play what? Like `/play never gonna give you up`.")
             renamer_voice = getattr(renamer, "voice", None)
             channel_to_join = renamer_voice.channel if renamer_voice else (guild.voice_client.channel if guild.voice_client else None)
             if channel_to_join is None:
