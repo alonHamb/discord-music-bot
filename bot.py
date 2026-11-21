@@ -481,8 +481,7 @@ class MusicBot(discord.Client):
         if not player.channel:
             return
         try:
-            await player.channel.send(f"Now playing: **{track.title}** ({track.length}), requested by {track.requested_by}.",
-                                      allowed_mentions=discord.AllowedMentions.none())
+            await player.channel.send(now_playing_text(track), allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException as e:
             print(f"Couldn't announce {track.title!r}: {e!r}")
 
@@ -848,15 +847,20 @@ async def show_queue(interaction: discord.Interaction):
     await interaction.response.send_message("\n".join(lines))
 
 
+def now_playing_text(t: Track) -> str:
+    """The song line shown by /nowplaying and when a song starts."""
+    msg = f"**{t.title}** ({t.length}), requested by {t.requested_by}"
+    if t.web_url:
+        msg += f"\n<{t.web_url}>"
+    return msg
+
+
 @bot.tree.command(description="Show the current song")
 async def nowplaying(interaction: discord.Interaction):
     t = bot.player(interaction.guild.id).current
     if not t:
         return await interaction.response.send_message("Nothing is playing.")
-    msg = f"**{t.title}** ({t.length}), requested by {t.requested_by}"
-    if t.web_url:
-        msg += f"\n<{t.web_url}>"
-    await interaction.response.send_message(msg)
+    await interaction.response.send_message(now_playing_text(t))
 
 
 @bot.tree.command(description="Show the current song with links to it on YouTube, Spotify, Apple Music and more")
