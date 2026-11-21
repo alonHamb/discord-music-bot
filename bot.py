@@ -481,15 +481,20 @@ async def ensure_voice(interaction: discord.Interaction) -> discord.VoiceClient 
     if not interaction.user.voice or not interaction.user.voice.channel:
         await interaction.followup.send("Join a voice channel first.")
         return None
-    channel = interaction.user.voice.channel
-    me = interaction.guild.me
+    return await join_voice(interaction.user.voice.channel, interaction.followup.send)
+
+
+async def join_voice(channel: discord.VoiceChannel | discord.StageChannel, send) -> discord.VoiceClient | None:
+    """Connect to (or move to) `channel`. `send` reports problems back to whoever asked."""
+    guild = channel.guild
+    me = guild.me
     if not channel.permissions_for(me).speak:
-        await interaction.followup.send(
+        await send(
             f"I don't have the **Speak** permission in {channel.mention}. "
             "Give my role Speak in the channel or server settings, then try again."
         )
         return None
-    vc = interaction.guild.voice_client
+    vc = guild.voice_client
     if vc is None:
         vc = await channel.connect(self_deaf=True)
     elif vc.channel != channel:
@@ -498,9 +503,9 @@ async def ensure_voice(interaction: discord.Interaction) -> discord.VoiceClient 
         try:
             await me.edit(suppress=False)  # become a speaker on the stage
         except discord.HTTPException:
-            await interaction.followup.send("I'm only a listener on this stage. Invite me to speak, or use a normal voice channel.")
+            await send("I'm only a listener on this stage. Invite me to speak, or use a normal voice channel.")
     if me.voice and me.voice.mute:
-        await interaction.followup.send("Heads up: I'm **server-muted**. Right-click me and untick Server Mute so you can hear me.")
+        await send("Heads up: I'm **server-muted**. Right-click me and untick Server Mute so you can hear me.")
     return vc
 
 
@@ -516,16 +521,16 @@ async def play(interaction: discord.Interaction, query: str):
     except Exception as e:
         await interaction.followup.send(f"Couldn't load that: `{e}`")
         return
-    await enqueue(interaction, vc, tracks, playlist)
+    await enqueue(interaction.guild, interaction.followup.send, tracks, playlist)
 
 
-async def enqueue(interaction: discord.Interaction, vc: discord.VoiceClient, tracks: list[Track], playlist: str | None):
-    """Add tracks to the queue, start playing if idle, and report back."""
-    player = bot.player(interaction.guild.id)
+async def enqueue(guild: discord.Guild, send, tracks: list[Track], playlist: str | None):
+    """Add tracks to the queue, start playing if idle, and report back with `send`."""
+    player = bot.player(guild.id)
     player.queue.extend(tracks)
     starting = player.current is None  # a song being matched counts as playing
     if starting:
-        bot.play_next(interaction.guild)
+        bot.play_next(guild)
     elif player.queue[0].needs_match:
         player.queue[0].start_matching()  # these may be next: get them ready now
 
@@ -537,72 +542,114 @@ async def enqueue(interaction: discord.Interaction, vc: discord.VoiceClient, tra
         msg = f"▶️ Now playing **{tracks[0].title}** ({tracks[0].length})"
     else:
         msg = f"➕ Queued **{tracks[0].title}** ({tracks[0].length}) — position {len(player.queue)}"
-    await interaction.followup.send(msg)
+    await send(msg)
 
 
-@bot.tree.command(description="Skip the current song")
-async def skip(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    player = bot.player(interaction.guild.id)
+# These do the work behind both the slash commands and the nickname commands, and return the reply.
+def do_skip(guild: discord.Guild) -> str:
+    vc = guild.voice_client
+    player = bot.player(guild.id)
     if not vc or not player.current:
-        return await interaction.response.send_message("Nothing is playing.")
+        return "Nothing is playing."
     player.skipping = True
     if vc.is_playing() or vc.is_paused():
         vc.stop()  # triggers play_next via the after-callback
     else:
-        bot.play_next(interaction.guild)  # the song was still being matched and hadn't started
-    await interaction.response.send_message("⏭️ Skipped.")
+        bot.play_next(guild)  # the song was still being matched and hadn't started
+    return "⏭️ Skipped."
+
+
+def do_replay(guild: discord.Guild) -> str:
+    vc = guild.voice_client
+    player = bot.player(guild.id)
+    if not vc or not player.current:
+        return "Nothing is playing."
+    if not (vc.is_playing() or vc.is_paused()):
+        return "The song is still starting, so it's already at the beginning."
+    player.replaying = True
+    vc.stop()  # play_next puts the song back at the front of the queue
+    return f"⏮️ Starting **{player.current.title}** over."
+
+
+def do_pause(guild: discord.Guild) -> str:
+    vc = guild.voice_client
+    if vc and vc.is_playing():
+        vc.pause()
+        return "⏸️ Paused."
+    return "Nothing is playing."
+
+
+def do_resume(guild: discord.Guild) -> str:
+    vc = guild.voice_client
+    if vc and vc.is_paused():
+        vc.resume()
+        return "▶️ Resumed."
+    return "Nothing is paused."
+
+
+def do_stop(guild: discord.Guild) -> str:
+    bot.player(guild.id).reset()
+    if guild.voice_client:
+        guild.voice_client.stop()
+    return "⏹️ Stopped and cleared the queue."
+
+
+def do_shuffle(guild: discord.Guild) -> str:
+    player = bot.player(guild.id)
+    if len(player.queue) < 2:
+        return "Need at least 2 songs in the queue to shuffle."
+    tracks = list(player.queue)
+    random.shuffle(tracks)
+    player.queue = deque(tracks)
+    return f"🔀 Shuffled {len(tracks)} songs."
+
+
+def do_volume(guild: discord.Guild, level: int) -> str:
+    player = bot.player(guild.id)
+    player.volume = level / 100
+    vc = guild.voice_client
+    if vc and isinstance(vc.source, discord.PCMVolumeTransformer):
+        vc.source.volume = player.volume
+    return f"🔊 Volume set to {level}%."
+
+
+async def do_leave(guild: discord.Guild) -> str:
+    vc = guild.voice_client
+    if not vc:
+        return "I'm not in a voice channel."
+    bot.player(guild.id).reset()
+    await vc.disconnect()
+    return "👋 Bye!"
+
+
+@bot.tree.command(description="Skip the current song")
+async def skip(interaction: discord.Interaction):
+    await interaction.response.send_message(do_skip(interaction.guild))
 
 
 @bot.tree.command(description="Start the current song over from the beginning")
 async def replay(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    player = bot.player(interaction.guild.id)
-    if not vc or not player.current:
-        return await interaction.response.send_message("Nothing is playing.")
-    if not (vc.is_playing() or vc.is_paused()):
-        return await interaction.response.send_message("The song is still starting, so it's already at the beginning.")
-    player.replaying = True
-    vc.stop()  # play_next puts the song back at the front of the queue
-    await interaction.response.send_message(f"⏮️ Starting **{player.current.title}** over.")
+    await interaction.response.send_message(do_replay(interaction.guild))
 
 
 @bot.tree.command(description="Pause playback")
 async def pause(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if vc and vc.is_playing():
-        vc.pause()
-        return await interaction.response.send_message("⏸️ Paused.")
-    await interaction.response.send_message("Nothing is playing.")
+    await interaction.response.send_message(do_pause(interaction.guild))
 
 
 @bot.tree.command(description="Resume playback")
 async def resume(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if vc and vc.is_paused():
-        vc.resume()
-        return await interaction.response.send_message("▶️ Resumed.")
-    await interaction.response.send_message("Nothing is paused.")
+    await interaction.response.send_message(do_resume(interaction.guild))
 
 
 @bot.tree.command(description="Stop playback and clear the queue")
 async def stop(interaction: discord.Interaction):
-    bot.player(interaction.guild.id).reset()
-    vc = interaction.guild.voice_client
-    if vc:
-        vc.stop()
-    await interaction.response.send_message("⏹️ Stopped and cleared the queue.")
+    await interaction.response.send_message(do_stop(interaction.guild))
 
 
 @bot.tree.command(description="Shuffle the upcoming songs")
 async def shuffle(interaction: discord.Interaction):
-    player = bot.player(interaction.guild.id)
-    if len(player.queue) < 2:
-        return await interaction.response.send_message("Need at least 2 songs in the queue to shuffle.")
-    tracks = list(player.queue)
-    random.shuffle(tracks)
-    player.queue = deque(tracks)
-    await interaction.response.send_message(f"🔀 Shuffled {len(tracks)} songs.")
+    await interaction.response.send_message(do_shuffle(interaction.guild))
 
 
 LOOP_LABELS = {"off": "➡️ Loop off", "track": "🔂 Looping the current song", "queue": "🔁 Looping the whole queue"}
@@ -674,22 +721,12 @@ async def playing(interaction: discord.Interaction):
 @bot.tree.command(description="Set volume (0-200, default 100)")
 @app_commands.describe(level="Volume percent; above 100 boosts quiet songs")
 async def volume(interaction: discord.Interaction, level: app_commands.Range[int, 0, 200]):
-    player = bot.player(interaction.guild.id)
-    player.volume = level / 100
-    vc = interaction.guild.voice_client
-    if vc and isinstance(vc.source, discord.PCMVolumeTransformer):
-        vc.source.volume = player.volume
-    await interaction.response.send_message(f"🔊 Volume set to {level}%.")
+    await interaction.response.send_message(do_volume(interaction.guild, level))
 
 
 @bot.tree.command(description="Disconnect the bot from voice")
 async def leave(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if not vc:
-        return await interaction.response.send_message("I'm not in a voice channel.")
-    bot.player(interaction.guild.id).reset()
-    await vc.disconnect()
-    await interaction.response.send_message("👋 Bye!")
+    await interaction.response.send_message(await do_leave(interaction.guild))
 
 
 playlist_group = app_commands.Group(name="playlist", description="Saved playlists for this server")
@@ -791,7 +828,7 @@ async def playlist_play(interaction: discord.Interaction, name: str, shuffle: bo
     tracks = [track_from_dict(d, interaction.user.display_name) for d in pl["tracks"]]
     if shuffle:
         random.shuffle(tracks)
-    await enqueue(interaction, vc, tracks, pl["name"])
+    await enqueue(interaction.guild, interaction.followup.send, tracks, pl["name"])
 
 
 @playlist_group.command(name="show", description="Show the songs in a saved playlist")
@@ -847,6 +884,105 @@ async def show_help(interaction: discord.Interaction):
         subs = c.commands if isinstance(c, app_commands.Group) else [c]
         lines += [f"`/{s.qualified_name}` — {s.description}" for s in subs]
     await interaction.response.send_message("**Music commands**\n" + "\n".join(lines), ephemeral=True)
+
+
+# Nickname commands: rename the bot to "!skip", "!play lofi", "!volume 50"... and it runs the command, then puts its
+# nickname back. Only people allowed to change the bot's nickname (Manage Nicknames, with a role above the bot's)
+# can do this. With View Audit Log the bot also knows who renamed it: needed for "!play" when it isn't in voice yet.
+NICK_PREFIX = "!"
+NICK_COMMANDS = "play <song>, skip, replay, pause, resume, stop, shuffle, loop <song|queue|off>, volume <0-200>, leave"
+LOOP_WORDS = {"song": "track", "track": "track", "one": "track", "queue": "queue", "all": "queue", "off": "off"}
+home_nicks: dict[int, str | None] = {}  # per server: the bot's real nickname, to put back after a command
+
+
+async def who_renamed_me(guild: discord.Guild) -> discord.Member | None:
+    if not guild.me.guild_permissions.view_audit_log:
+        return None
+    for attempt in range(2):  # the audit log entry can show up a moment after the rename
+        try:
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                recent = (discord.utils.utcnow() - entry.created_at).total_seconds() < 30
+                if entry.target and entry.target.id == bot.user.id and recent:
+                    return guild.get_member(entry.user.id) or entry.user
+        except discord.HTTPException:
+            return None
+        await asyncio.sleep(1)
+    return None
+
+
+def nick_reply_channel(guild: discord.Guild) -> discord.abc.Messageable | None:
+    """Where to answer a nickname command: the voice channel's chat if the bot is in one, else the server's main channel."""
+    vc = guild.voice_client
+    candidates = [vc.channel if vc else None, guild.system_channel, *guild.text_channels]
+    return next((c for c in candidates if c and c.permissions_for(guild.me).send_messages), None)
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    if after.id != bot.user.id or after.nick == before.nick:
+        return
+    guild = after.guild
+    if not (before.nick or "").startswith(NICK_PREFIX):
+        home_nicks[guild.id] = before.nick
+    if not (after.nick or "").startswith(NICK_PREFIX):
+        return  # an ordinary rename (or our own reset): leave it alone
+
+    command = after.nick[len(NICK_PREFIX):].strip()
+    try:
+        await guild.me.edit(nick=home_nicks.get(guild.id))
+    except discord.HTTPException as e:
+        print(f"Couldn't put my nickname back in {guild.name} (give me Change Nickname): {e!r}")
+
+    renamer = await who_renamed_me(guild)
+    channel = nick_reply_channel(guild)
+    by = f"{renamer.display_name} via nickname" if renamer else "Nickname command"
+    print(f"{by} in {guild.name}: {command!r}")
+
+    async def send(msg: str):
+        if channel:
+            try:
+                await channel.send(f"🏷️ *{by}:* {msg}", allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                pass
+
+    name, _, arg = command.partition(" ")
+    name, arg = name.lower(), arg.strip()
+    simple = {"skip": do_skip, "replay": do_replay, "pause": do_pause, "resume": do_resume,
+              "stop": do_stop, "shuffle": do_shuffle}
+    try:
+        if name in simple:
+            await send(simple[name](guild))
+        elif name == "leave":
+            await send(await do_leave(guild))
+        elif name == "volume":
+            if not arg.isdigit() or not 0 <= int(arg) <= 200:
+                return await send("Give a volume from 0 to 200, like `!volume 50`.")
+            await send(do_volume(guild, int(arg)))
+        elif name == "loop":
+            mode = LOOP_WORDS.get(arg.lower())
+            if not mode:
+                return await send("Loop what? Use `!loop song`, `!loop queue` or `!loop off`.")
+            bot.player(guild.id).loop = mode
+            await send(LOOP_LABELS[mode] + ".")
+        elif name == "play":
+            if not arg:
+                return await send("Play what? Like `!play never gonna give you up`.")
+            renamer_voice = getattr(renamer, "voice", None)
+            channel_to_join = renamer_voice.channel if renamer_voice else (guild.voice_client.channel if guild.voice_client else None)
+            if channel_to_join is None:
+                return await send("Join a voice channel first. (If you're in one, give me **View Audit Log** so I can see who renamed me.)")
+            if await join_voice(channel_to_join, send) is None:
+                return
+            try:
+                tracks, playlist = await fetch_tracks(arg, renamer.display_name if renamer else "nickname")
+            except Exception as e:
+                return await send(f"Couldn't load that: `{e}`")
+            await enqueue(guild, send, tracks, playlist)
+        else:
+            await send(f"I don't know `{NICK_PREFIX}{name}`. Nickname commands: {NICK_COMMANDS}.")
+    except Exception as e:
+        print(f"Error in nickname command {command!r}: {e!r}")
+        await send(f"⚠️ Something went wrong: `{e}`")
 
 
 @bot.event
