@@ -254,6 +254,7 @@ class GuildPlayer:
         self.volume = 1.0
         self.loop = "off"  # "off", "track" or "queue"
         self.skipping = False  # set by /skip so a looped track moves on
+        self.replaying = False  # set by /replay so the current song plays again from the start
         self.prefetched: tuple[Track, asyncio.Task] | None = None  # the next song, being prepared ahead of time
 
     def reset(self):
@@ -393,11 +394,13 @@ class MusicBot(discord.Client):
         player = self.player(guild.id)
         finished, player.current = player.current, None
         if finished:
-            if player.loop == "track" and not player.skipping:
+            if player.replaying:
+                player.queue.appendleft(finished)
+            elif player.loop == "track" and not player.skipping:
                 player.queue.appendleft(finished)
             elif player.loop == "queue":
                 player.queue.append(finished)
-        player.skipping = False
+        player.skipping = player.replaying = False
 
         vc = guild.voice_client
         if not vc or not player.queue:
@@ -549,6 +552,19 @@ async def skip(interaction: discord.Interaction):
     else:
         bot.play_next(interaction.guild)  # the song was still being matched and hadn't started
     await interaction.response.send_message("⏭️ Skipped.")
+
+
+@bot.tree.command(description="Start the current song over from the beginning")
+async def replay(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    player = bot.player(interaction.guild.id)
+    if not vc or not player.current:
+        return await interaction.response.send_message("Nothing is playing.")
+    if not (vc.is_playing() or vc.is_paused()):
+        return await interaction.response.send_message("The song is still starting, so it's already at the beginning.")
+    player.replaying = True
+    vc.stop()  # play_next puts the song back at the front of the queue
+    await interaction.response.send_message(f"⏮️ Starting **{player.current.title}** over.")
 
 
 @bot.tree.command(description="Pause playback")
