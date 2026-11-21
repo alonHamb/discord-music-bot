@@ -697,15 +697,13 @@ async def enqueue(guild: discord.Guild, send, tracks: list[Track], playlist: str
     elif player.queue[0].needs_match:
         player.queue[0].start_matching()  # these may be next: get them ready now
 
+    # Each thing gets its own message: what was added, then (if it's starting) the song now playing.
     if playlist:
-        msg = f"Added **{songs(len(tracks))}** from **{playlist}**."
-        if starting:
-            msg += f"\nNow playing: **{player.current.title}** ({player.current.length})."
-    elif starting:
-        msg = f"Now playing: **{tracks[0].title}** ({tracks[0].length})."
-    else:
-        msg = f"Queued **{tracks[0].title}** ({tracks[0].length}) at position {len(player.queue)}."
-    await send(msg)
+        await send(f"Added **{songs(len(tracks))}** from **{playlist}**.")
+    elif not starting:
+        await send(f"Queued **{tracks[0].title}** ({tracks[0].length}) at position {len(player.queue)}.")
+    if starting and player.current:
+        await send(now_playing_text(player.current))
 
 
 # These do the work behind both the slash commands and the nickname commands, and return the reply.
