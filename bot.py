@@ -622,6 +622,24 @@ async def ensure_voice(interaction: discord.Interaction) -> discord.VoiceClient 
     return await join_voice(interaction.user.voice.channel, interaction.followup.send)
 
 
+async def connect_voice(channel: discord.VoiceChannel | discord.StageChannel) -> discord.VoiceClient | None:
+    """Connect to `channel`, trying a second time if Discord's voice server doesn't answer.
+    Returns None if both attempts time out."""
+    for attempt in (1, 2):
+        try:
+            return await channel.connect(self_deaf=True)
+        except asyncio.TimeoutError:
+            print(f"Voice connect timed out (attempt {attempt}) in guild {channel.guild.id}")
+            # Clear any half-made connection so the retry (or the next /play) starts clean.
+            leftover = channel.guild.voice_client
+            if leftover is not None:
+                try:
+                    await leftover.disconnect(force=True)
+                except Exception:
+                    pass
+    return None
+
+
 async def join_voice(channel: discord.VoiceChannel | discord.StageChannel, send) -> discord.VoiceClient | None:
     """Connect to (or move to) `channel`. `send` reports problems back to whoever asked."""
     guild = channel.guild
@@ -634,7 +652,10 @@ async def join_voice(channel: discord.VoiceChannel | discord.StageChannel, send)
         return None
     vc = guild.voice_client
     if vc is None:
-        vc = await channel.connect(self_deaf=True)
+        vc = await connect_voice(channel)
+        if vc is None:
+            await send("Couldn't connect to voice (Discord didn't respond). Try again in a moment.")
+            return None
     elif vc.channel != channel:
         await vc.move_to(channel)
     if isinstance(channel, discord.StageChannel):
