@@ -241,6 +241,10 @@ class Track:
         return clock(self.duration) if self.duration else "?:??"
 
 
+def songs(n: int) -> str:
+    return f"{n} song" if n == 1 else f"{n} songs"
+
+
 def clock(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
@@ -256,6 +260,8 @@ class GuildPlayer:
         self.skipping = False  # set by /skip so a looped track moves on
         self.replaying = False  # set by /replay so the current song plays again from the start
         self.prefetched: tuple[Track, asyncio.Task] | None = None  # the next song, being prepared ahead of time
+        self.channel: discord.abc.Messageable | None = None  # where songs were last queued from: "Now playing" goes here
+        self.announced: Track | None = None  # the last song announced, so a replay or looped song isn't announced again
 
     def reset(self):
         # Clearing current first keeps the after-callback from looping it back in.
@@ -439,6 +445,18 @@ class MusicBot(discord.Client):
 
         guild.voice_client.play(discord.PCMVolumeTransformer(stream.audio, volume=player.volume), after=after)
         asyncio.create_task(self._prefetch_near_end(guild, track, stream.audio))
+        if player.announced is not track:
+            player.announced = track
+            asyncio.create_task(self._announce(player, track))
+
+    async def _announce(self, player: GuildPlayer, track: Track):
+        if not player.channel:
+            return
+        try:
+            await player.channel.send(f"Now playing: **{track.title}** ({track.length}), requested by {track.requested_by}.",
+                                      allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException as e:
+            print(f"Couldn't announce {track.title!r}: {e!r}")
 
     async def _prefetch_near_end(self, guild: discord.Guild, track: Track, audio: BufferedAudio):
         """When the playing song is about to end, start preparing the next one so it follows with no gap."""
@@ -467,7 +485,7 @@ async def on_command_error(interaction: discord.Interaction, error: app_commands
     # Always answer, so a crash never leaves Discord stuck on "thinking…".
     cause = getattr(error, "original", error)
     print(f"Error in /{interaction.command.name if interaction.command else '?'}: {cause!r}")
-    msg = f"⚠️ Something went wrong: `{cause}`"
+    msg = f"Something went wrong: `{cause}`"
     try:
         if interaction.response.is_done():
             await interaction.followup.send(msg)
@@ -521,27 +539,32 @@ async def play(interaction: discord.Interaction, query: str):
     except Exception as e:
         await interaction.followup.send(f"Couldn't load that: `{e}`")
         return
-    await enqueue(interaction.guild, interaction.followup.send, tracks, playlist)
+    await enqueue(interaction.guild, interaction.followup.send, tracks, playlist, interaction.channel)
 
 
-async def enqueue(guild: discord.Guild, send, tracks: list[Track], playlist: str | None):
-    """Add tracks to the queue, start playing if idle, and report back with `send`."""
+async def enqueue(guild: discord.Guild, send, tracks: list[Track], playlist: str | None,
+                  channel: discord.abc.Messageable | None):
+    """Add tracks to the queue, start playing if idle, and report back with `send`.
+    Later songs are announced in `channel` as they start."""
     player = bot.player(guild.id)
     player.queue.extend(tracks)
+    if channel:
+        player.channel = channel
     starting = player.current is None  # a song being matched counts as playing
     if starting:
         bot.play_next(guild)
+        player.announced = player.current  # this reply already says it's playing
     elif player.queue[0].needs_match:
         player.queue[0].start_matching()  # these may be next: get them ready now
 
     if playlist:
-        msg = f"📃 Added **{len(tracks)}** tracks from **{playlist}**."
+        msg = f"Added **{songs(len(tracks))}** from **{playlist}**."
         if starting:
-            msg += f"\n▶️ Now playing **{player.current.title}** ({player.current.length})"
+            msg += f"\nNow playing: **{player.current.title}** ({player.current.length})."
     elif starting:
-        msg = f"▶️ Now playing **{tracks[0].title}** ({tracks[0].length})"
+        msg = f"Now playing: **{tracks[0].title}** ({tracks[0].length})."
     else:
-        msg = f"➕ Queued **{tracks[0].title}** ({tracks[0].length}) — position {len(player.queue)}"
+        msg = f"Queued **{tracks[0].title}** ({tracks[0].length}) at position {len(player.queue)}."
     await send(msg)
 
 
@@ -556,7 +579,7 @@ def do_skip(guild: discord.Guild) -> str:
         vc.stop()  # triggers play_next via the after-callback
     else:
         bot.play_next(guild)  # the song was still being matched and hadn't started
-    return "⏭️ Skipped."
+    return "Skipped the song."
 
 
 def do_replay(guild: discord.Guild) -> str:
@@ -568,14 +591,14 @@ def do_replay(guild: discord.Guild) -> str:
         return "The song is still starting, so it's already at the beginning."
     player.replaying = True
     vc.stop()  # play_next puts the song back at the front of the queue
-    return f"⏮️ Starting **{player.current.title}** over."
+    return f"Starting **{player.current.title}** over."
 
 
 def do_pause(guild: discord.Guild) -> str:
     vc = guild.voice_client
     if vc and vc.is_playing():
         vc.pause()
-        return "⏸️ Paused."
+        return "Paused."
     return "Nothing is playing."
 
 
@@ -583,7 +606,7 @@ def do_resume(guild: discord.Guild) -> str:
     vc = guild.voice_client
     if vc and vc.is_paused():
         vc.resume()
-        return "▶️ Resumed."
+        return "Resumed."
     return "Nothing is paused."
 
 
@@ -591,17 +614,17 @@ def do_stop(guild: discord.Guild) -> str:
     bot.player(guild.id).reset()
     if guild.voice_client:
         guild.voice_client.stop()
-    return "⏹️ Stopped and cleared the queue."
+    return "Stopped playback and cleared the queue."
 
 
 def do_shuffle(guild: discord.Guild) -> str:
     player = bot.player(guild.id)
     if len(player.queue) < 2:
-        return "Need at least 2 songs in the queue to shuffle."
+        return "The queue needs at least two songs to shuffle."
     tracks = list(player.queue)
     random.shuffle(tracks)
     player.queue = deque(tracks)
-    return f"🔀 Shuffled {len(tracks)} songs."
+    return f"Shuffled {len(tracks)} songs."
 
 
 def do_volume(guild: discord.Guild, level: int) -> str:
@@ -610,7 +633,7 @@ def do_volume(guild: discord.Guild, level: int) -> str:
     vc = guild.voice_client
     if vc and isinstance(vc.source, discord.PCMVolumeTransformer):
         vc.source.volume = player.volume
-    return f"🔊 Volume set to {level}%."
+    return f"Volume set to {level}%."
 
 
 async def do_leave(guild: discord.Guild) -> str:
@@ -619,7 +642,7 @@ async def do_leave(guild: discord.Guild) -> str:
         return "I'm not in a voice channel."
     bot.player(guild.id).reset()
     await vc.disconnect()
-    return "👋 Bye!"
+    return "Goodbye!"
 
 
 @bot.tree.command(description="Skip the current song")
@@ -652,7 +675,7 @@ async def shuffle(interaction: discord.Interaction):
     await interaction.response.send_message(do_shuffle(interaction.guild))
 
 
-LOOP_LABELS = {"off": "➡️ Loop off", "track": "🔂 Looping the current song", "queue": "🔁 Looping the whole queue"}
+LOOP_LABELS = {"off": "Looping is off", "track": "Looping the current song", "queue": "Looping the whole queue"}
 
 
 @bot.tree.command(description="Loop the current song or the whole queue")
@@ -678,7 +701,7 @@ async def show_queue(interaction: discord.Interaction):
     for i, t in enumerate(list(player.queue)[:10], 1):
         lines.append(f"`{i}.` {t.title} ({t.length}) — {t.requested_by}")
     if len(player.queue) > 10:
-        lines.append(f"…and {len(player.queue) - 10} more")
+        lines.append(f"...and {len(player.queue) - 10} more.")
     if player.loop != "off":
         lines.append(LOOP_LABELS[player.loop])
     await interaction.response.send_message("\n".join(lines))
@@ -689,7 +712,7 @@ async def nowplaying(interaction: discord.Interaction):
     t = bot.player(interaction.guild.id).current
     if not t:
         return await interaction.response.send_message("Nothing is playing.")
-    msg = f"🎶 **{t.title}** ({t.length}) — requested by {t.requested_by}"
+    msg = f"**{t.title}** ({t.length}), requested by {t.requested_by}"
     if t.web_url:
         msg += f"\n<{t.web_url}>"
     await interaction.response.send_message(msg)
@@ -712,13 +735,13 @@ async def playing(interaction: discord.Interaction):
     audio = source.original if isinstance(source, discord.PCMVolumeTransformer) else None
     position = f"{clock(audio.played_seconds)} / " if isinstance(audio, BufferedAudio) else ""
     paused = " (paused)" if vc and vc.is_paused() else ""
-    lines = [f"🎶 **{t.title}**", f"{position}{t.length}{paused} — requested by {t.requested_by}"]
+    lines = [f"**{t.title}**", f"{position}{t.length}{paused}, requested by {t.requested_by}"]
     if links:
         lines.append(" · ".join(f"[{name}](<{url}>)" for name, url in links.items()))
     await interaction.followup.send("\n".join(lines))
 
 
-@bot.tree.command(description="Set volume (0-200, default 100)")
+@bot.tree.command(description="Set the volume (0-200, default 100)")
 @app_commands.describe(level="Volume percent; above 100 boosts quiet songs")
 async def volume(interaction: discord.Interaction, level: app_commands.Range[int, 0, 200]):
     await interaction.response.send_message(do_volume(interaction.guild, level))
@@ -761,7 +784,7 @@ async def playlist_create(interaction: discord.Interaction, name: app_commands.R
         return await interaction.response.send_message(f"A playlist called **{name}** already exists.", ephemeral=True)
     playlists.guild(interaction.guild_id)[name.lower()] = {"name": name, "owner_id": interaction.user.id, "tracks": []}
     playlists.save()
-    await interaction.response.send_message(f"📁 Created playlist **{name}**. Add songs with `/playlist add`.")
+    await interaction.response.send_message(f"Created the playlist **{name}**. Add songs to it with `/playlist add`.")
 
 
 @playlist_group.command(name="add", description="Add a song (or a YouTube playlist) to a saved playlist")
@@ -786,14 +809,14 @@ async def playlist_add(interaction: discord.Interaction, name: str, song: str | 
 
     room = MAX_SAVED_TRACKS - len(pl["tracks"])
     if room <= 0:
-        return await interaction.followup.send(f"**{pl['name']}** is full ({MAX_SAVED_TRACKS} songs).")
+        return await interaction.followup.send(f"**{pl['name']}** is full (it can hold {MAX_SAVED_TRACKS} songs).")
     tracks = tracks[:room]
     pl["tracks"].extend(track_to_dict(t) for t in tracks)
     playlists.save()
     if source or len(tracks) > 1:
-        await interaction.followup.send(f"➕ Added **{len(tracks)}** songs to **{pl['name']}** ({len(pl['tracks'])} total).")
+        await interaction.followup.send(f"Added **{songs(len(tracks))}** to **{pl['name']}**. It now has {songs(len(pl['tracks']))}.")
     else:
-        await interaction.followup.send(f"➕ Added **{tracks[0].title}** to **{pl['name']}** — position {len(pl['tracks'])}.")
+        await interaction.followup.send(f"Added **{tracks[0].title}** to **{pl['name']}** at position {len(pl['tracks'])}.")
 
 
 @playlist_group.command(name="remove", description="Remove a song from a saved playlist")
@@ -803,13 +826,15 @@ async def playlist_remove(interaction: discord.Interaction, name: str, position:
     pl = playlists.get(interaction.guild_id, name)
     if not pl:
         return await missing_playlist(interaction, name)
+    if not pl["tracks"]:
+        return await interaction.response.send_message(f"**{pl['name']}** is empty.", ephemeral=True)
     if not 1 <= position <= len(pl["tracks"]):
         return await interaction.response.send_message(
-            f"**{pl['name']}** has {len(pl['tracks'])} songs; pick a number from 1 to {len(pl['tracks'])}.", ephemeral=True
+            f"**{pl['name']}** has {songs(len(pl['tracks']))}. Pick a number from 1 to {len(pl['tracks'])}.", ephemeral=True
         )
     removed = pl["tracks"].pop(position - 1)
     playlists.save()
-    await interaction.response.send_message(f"➖ Removed **{removed['title']}** from **{pl['name']}**.")
+    await interaction.response.send_message(f"Removed **{removed['title']}** from **{pl['name']}**.")
 
 
 @playlist_group.command(name="play", description="Queue a saved playlist")
@@ -820,7 +845,7 @@ async def playlist_play(interaction: discord.Interaction, name: str, shuffle: bo
     if not pl:
         return await missing_playlist(interaction, name)
     if not pl["tracks"]:
-        return await interaction.response.send_message(f"**{pl['name']}** is empty. Add songs with `/playlist add`.", ephemeral=True)
+        return await interaction.response.send_message(f"**{pl['name']}** is empty. Add songs to it with `/playlist add`.", ephemeral=True)
     await interaction.response.defer()
     vc = await ensure_voice(interaction)
     if vc is None:
@@ -828,7 +853,7 @@ async def playlist_play(interaction: discord.Interaction, name: str, shuffle: bo
     tracks = [track_from_dict(d, interaction.user.display_name) for d in pl["tracks"]]
     if shuffle:
         random.shuffle(tracks)
-    await enqueue(interaction.guild, interaction.followup.send, tracks, pl["name"])
+    await enqueue(interaction.guild, interaction.followup.send, tracks, pl["name"], interaction.channel)
 
 
 @playlist_group.command(name="show", description="Show the songs in a saved playlist")
@@ -839,12 +864,12 @@ async def playlist_show(interaction: discord.Interaction, name: str):
     if not pl:
         return await missing_playlist(interaction, name)
     tracks = [track_from_dict(d, "") for d in pl["tracks"]]
-    lines = [f"📁 **{pl['name']}** — {len(tracks)} songs, made by <@{pl['owner_id']}>"]
+    lines = [f"**{pl['name']}**: {songs(len(tracks))}, made by <@{pl['owner_id']}>"]
     lines += [f"`{i}.` {t.title[:70]} ({t.length})" for i, t in enumerate(tracks[:20], 1)]  # stay under Discord's 2000 chars
     if len(tracks) > 20:
-        lines.append(f"…and {len(tracks) - 20} more")
+        lines.append(f"...and {len(tracks) - 20} more.")
     if not tracks:
-        lines.append("It's empty. Add songs with `/playlist add`.")
+        lines.append("It's empty. Add songs to it with `/playlist add`.")
     await interaction.response.send_message("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -852,12 +877,12 @@ async def playlist_show(interaction: discord.Interaction, name: str):
 async def playlist_list(interaction: discord.Interaction):
     pls = sorted(playlists.guild(interaction.guild_id).values(), key=lambda p: p["name"].lower())
     if not pls:
-        return await interaction.response.send_message("No playlists yet. Make one with `/playlist create`.")
-    lines = ["**Playlists**"] + [f"📁 **{p['name']}** — {len(p['tracks'])} songs" for p in pls]
+        return await interaction.response.send_message("There are no playlists yet. Make one with `/playlist create`.")
+    lines = ["**Playlists**"] + [f"**{p['name']}**: {songs(len(p['tracks']))}" for p in pls]
     await interaction.response.send_message("\n".join(lines))
 
 
-@playlist_group.command(name="delete", description="Delete a saved playlist (its creator or a server manager)")
+@playlist_group.command(name="delete", description="Delete a saved playlist (only its creator or a server manager can)")
 @app_commands.describe(name="Playlist to delete")
 @app_commands.autocomplete(name=playlist_name_autocomplete)
 async def playlist_delete(interaction: discord.Interaction, name: str):
@@ -871,7 +896,7 @@ async def playlist_delete(interaction: discord.Interaction, name: str):
         )
     del playlists.guild(interaction.guild_id)[pl["name"].lower()]
     playlists.save()
-    await interaction.response.send_message(f"🗑️ Deleted playlist **{pl['name']}**.")
+    await interaction.response.send_message(f"Deleted the playlist **{pl['name']}**.")
 
 
 bot.tree.add_command(playlist_group)
@@ -941,7 +966,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     async def send(msg: str):
         if channel:
             try:
-                await channel.send(f"🏷️ *{by}:* {msg}", allowed_mentions=discord.AllowedMentions.none())
+                await channel.send(f"*{by}:* {msg}", allowed_mentions=discord.AllowedMentions.none())
             except discord.HTTPException:
                 pass
 
@@ -956,17 +981,17 @@ async def on_member_update(before: discord.Member, after: discord.Member):
             await send(await do_leave(guild))
         elif name == "volume":
             if not arg.isdigit() or not 0 <= int(arg) <= 200:
-                return await send("Give a volume from 0 to 200, like `/volume 50`.")
+                return await send("Give a volume from 0 to 200, for example `/volume 50`.")
             await send(do_volume(guild, int(arg)))
         elif name == "loop":
             mode = LOOP_WORDS.get(arg.lower())
             if not mode:
-                return await send("Loop what? Use `/loop song`, `/loop queue` or `/loop off`.")
+                return await send("What should I loop? Use `/loop song`, `/loop queue` or `/loop off`.")
             bot.player(guild.id).loop = mode
             await send(LOOP_LABELS[mode] + ".")
         elif name == "play":
             if not arg:
-                return await send("Play what? Like `/play never gonna give you up`.")
+                return await send("What should I play? For example: `/play never gonna give you up`.")
             renamer_voice = getattr(renamer, "voice", None)
             channel_to_join = renamer_voice.channel if renamer_voice else (guild.voice_client.channel if guild.voice_client else None)
             if channel_to_join is None:
@@ -977,12 +1002,12 @@ async def on_member_update(before: discord.Member, after: discord.Member):
                 tracks, playlist = await fetch_tracks(arg, renamer.display_name if renamer else "nickname")
             except Exception as e:
                 return await send(f"Couldn't load that: `{e}`")
-            await enqueue(guild, send, tracks, playlist)
+            await enqueue(guild, send, tracks, playlist, channel)
         else:
             await send(f"I don't know `{NICK_PREFIX}{name}`. Nickname commands: {NICK_COMMANDS}.")
     except Exception as e:
         print(f"Error in nickname command {command!r}: {e!r}")
-        await send(f"⚠️ Something went wrong: `{e}`")
+        await send(f"Something went wrong: `{e}`")
 
 
 @bot.event
