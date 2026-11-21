@@ -270,11 +270,14 @@ class GuildPlayer:
         self.channel: discord.abc.Messageable | None = None  # where songs were last queued from: "Now playing" goes here
         self.announced: Track | None = None  # the last song announced, so a replay or looped song isn't announced again
         self.resume_paused = False  # continuing a song that was paused before a restart: start it paused
+        # Someone disconnected the bot from this voice channel mid-song: the song is kept (paused) until /resume.
+        self.kicked_from: discord.VoiceChannel | discord.StageChannel | None = None
 
     def reset(self):
         # Clearing current first keeps the after-callback from looping it back in.
         self.queue.clear()
         self.current = None
+        self.kicked_from = None
         self.discard_prefetch()
 
     def peek_next(self) -> Track | None:
@@ -418,11 +421,19 @@ class MusicBot(discord.Client):
     def player(self, guild_id: int) -> GuildPlayer:
         return self.players.setdefault(guild_id, GuildPlayer())
 
-    def play_next(self, guild: discord.Guild):
+    def play_next(self, guild: discord.Guild, stopped_at: float = 0):
         if self.shutting_down:  # the song stopped because we're shutting down: keep the queue as it was saved
             return
         player = self.player(guild.id)
         finished, player.current = player.current, None
+        if finished and not (guild.me.voice and guild.me.voice.channel):
+            # It stopped because someone disconnected the bot (/leave and auto-leave clear `current` first): keep
+            # the song where it was, like a pause, and wait for /resume to come back (see on_voice_state_update).
+            finished.resume_at = max(0.0, stopped_at - 1)  # a second of overlap, so nothing is missed
+            player.queue.appendleft(finished)
+            player.skipping = player.replaying = False
+            player.discard_prefetch()
+            return
         if finished:
             if player.replaying:
                 player.queue.appendleft(finished)
@@ -437,6 +448,7 @@ class MusicBot(discord.Client):
             player.current = None
             return
         track = player.current = player.queue.popleft()
+        player.kicked_from = None
         if player.queue and player.queue[0].needs_match:
             player.queue[0].start_matching()  # get the next song ready while this one plays
         asyncio.create_task(self._prepare_and_play(guild, track))
@@ -465,7 +477,7 @@ class MusicBot(discord.Client):
             stream.downloader.kill()  # stop downloading when the song ends or is skipped
             if err:
                 print(f"Playback error: {err!r}")
-            self.loop.call_soon_threadsafe(self.play_next, guild)
+            self.loop.call_soon_threadsafe(self.play_next, guild, stream.audio.played_seconds)
 
         guild.voice_client.play(discord.PCMVolumeTransformer(stream.audio, volume=player.volume), after=after)
         track.resume_at = 0  # a replay or loop starts from the beginning
@@ -742,8 +754,27 @@ def do_pause(guild: discord.Guild) -> str:
     return "Nothing is playing."
 
 
-def do_resume(guild: discord.Guild) -> str:
+async def do_resume(guild: discord.Guild, send, user: discord.Member | None = None) -> str:
     vc = guild.voice_client
+    player = bot.player(guild.id)
+    if not vc and player.kicked_from:
+        # Disconnected mid-song: rejoin that channel (or the asker's, if it's gone) and continue the song.
+        channel = guild.get_channel(player.kicked_from.id)
+        if channel is None and user and user.voice:
+            channel = user.voice.channel
+        if channel is None:
+            return "The voice channel I was in is gone. Join a voice channel and use /resume again."
+        if await join_voice(channel, send) is None:
+            return "Couldn't get back into voice, so the song is still paused."
+        if player.current:  # it was still starting when I was disconnected: start it again
+            player.queue.appendleft(player.current)
+            player.current = None
+        if not player.queue:
+            player.kicked_from = None
+            return "Nothing is paused."
+        track = player.queue[0]
+        bot.play_next(guild)
+        return f"Back in {channel.mention}: resuming **{track.title}** at {clock(track.resume_at)}."
     if vc and vc.is_paused():
         vc.resume()
         return "Resumed."
@@ -800,9 +831,10 @@ async def pause(interaction: discord.Interaction):
     await interaction.response.send_message(do_pause(interaction.guild))
 
 
-@bot.tree.command(description="Resume playback")
+@bot.tree.command(description="Resume playback (also brings the bot back if it was disconnected mid-song)")
 async def resume(interaction: discord.Interaction):
-    await interaction.response.send_message(do_resume(interaction.guild))
+    await interaction.response.defer()  # rejoining voice can take a few seconds
+    await interaction.followup.send(await do_resume(interaction.guild, interaction.followup.send, interaction.user))
 
 
 @bot.tree.command(description="Stop playback and clear the queue")
@@ -1129,11 +1161,12 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
     name, _, arg = command.partition(" ")
     name, arg = name.lower(), arg.strip()
-    simple = {"skip": do_skip, "replay": do_replay, "pause": do_pause, "resume": do_resume,
-              "stop": do_stop, "shuffle": do_shuffle}
+    simple = {"skip": do_skip, "replay": do_replay, "pause": do_pause, "stop": do_stop, "shuffle": do_shuffle}
     try:
         if name in simple:
             await send(simple[name](guild))
+        elif name == "resume":
+            await send(await do_resume(guild, send, renamer if isinstance(renamer, discord.Member) else None))
         elif name == "leave":
             await send(await do_leave(guild))
         elif name == "volume":
@@ -1169,6 +1202,22 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before, after):
+    player = bot.player(member.guild.id)
+    if member.id == bot.user.id and before.channel and not after.channel:
+        # Disconnected by someone else (/leave and auto-leave clear the queue first, so they don't land here).
+        # play_next keeps the song and its spot; remember the channel so /resume can come back to it.
+        if bot.shutting_down or not (player.current or player.queue):
+            return
+        player.kicked_from = before.channel
+        track = player.current or player.queue[0]
+        print(f"Disconnected from {before.channel} in {member.guild.name}; paused {track.title!r} until /resume.")
+        if player.channel:
+            try:
+                await player.channel.send(f"I was disconnected from {before.channel.mention}, so **{track.title}** "
+                                          "is paused. Use `/resume` to bring me back.")
+            except discord.HTTPException:
+                pass
+        return
     # Leave when everyone else has left the channel.
     vc = member.guild.voice_client
     if vc and before.channel == vc.channel and all(m.bot for m in vc.channel.members):
