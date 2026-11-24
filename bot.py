@@ -57,8 +57,6 @@ elif node := os.getenv("NODE_BIN") or find_exe("node"):
 else:
     JS_RUNTIME = ("deno", None)
 
-MAX_PLAYLIST = 200  # most tracks one /play can add from a playlist
-
 YDL_OPTIONS = {
     "format": "bestaudio/best",
     "noplaylist": True,  # a video link that's also in a playlist plays just that video
@@ -318,7 +316,7 @@ async def fetch_tracks(query: str, requester: str) -> tuple[list[Track], str | N
         tracks = [
             Track(title=s.search, page_url=f"ytsearch1:{s.search} audio", duration=s.duration, requested_by=requester,
                   link=s.link, artist=s.artist, song=s.title)
-            for s in songs[:MAX_PLAYLIST]
+            for s in songs
         ]
         return tracks, collection
 
@@ -332,10 +330,9 @@ async def fetch_tracks(query: str, requester: str) -> tuple[list[Track], str | N
             entries = entries[:1]  # a search: take the top result
         else:
             playlist = info.get("title") or "playlist"
-            entries = entries[:MAX_PLAYLIST]
             if any(not e.get("title") for e in entries):
                 # SoundCloud's quick listing can omit titles: look each track up fully (slower, but rare).
-                full_opts = dict(YDL_OPTIONS, extract_flat=False, playlistend=MAX_PLAYLIST)
+                full_opts = dict(YDL_OPTIONS, extract_flat=False)
                 with yt_dlp.YoutubeDL(full_opts) as ydl:
                     full = await asyncio.to_thread(ydl.extract_info, query, download=False)
                 entries = [e for e in full.get("entries") or [] if e]
@@ -357,7 +354,6 @@ async def fetch_tracks(query: str, requester: str) -> tuple[list[Track], str | N
 
 
 PLAYLISTS_FILE = Path(os.getenv("PLAYLISTS_FILE") or Path(__file__).with_name("playlists.json"))  # .deb sets it
-MAX_SAVED_TRACKS = 500
 
 
 class PlaylistStore:
@@ -392,6 +388,62 @@ def track_from_dict(d: dict, requester: str) -> Track:
         artist, song = d["title"].split(" - ", 1)  # saved before smart matching existed: "Artist - Title"
     return Track(title=d["title"], page_url=d["url"], duration=d.get("duration"), requested_by=requester,
                  link=d.get("link"), artist=artist, song=song)
+
+
+# A saved playlist filled from a playlist link (YouTube, SoundCloud, Spotify, Apple Music) remembers the link in
+# "sources", and its songs from there carry "source": <link>. Each /playlist play re-reads the links and brings those
+# songs up to date; songs added by hand stay as they are, and songs removed with /playlist remove stay removed.
+
+def track_key(d: dict) -> str:
+    """What identifies a saved song between refreshes: its Spotify/Apple Music page, else what yt-dlp plays."""
+    return d.get("link") or d["url"]
+
+
+def is_link(text: str) -> bool:
+    return text.strip().startswith(("http://", "https://"))
+
+
+def add_source(pl: dict, url: str, title: str, tracks: list[Track]) -> list[dict]:
+    """Remember `url` as one of the playlist's sources; returns the tracks as saved dicts, tagged with it."""
+    url = url.strip()
+    if not any(s["url"] == url for s in pl.setdefault("sources", [])):
+        pl["sources"].append({"url": url, "title": title, "removed": []})
+    return [dict(track_to_dict(t), source=url) for t in tracks]
+
+
+async def refresh_from_sources(pl: dict, requester: str) -> list[str]:
+    """Update the songs that came from playlist links to match those playlists now. Returns notes for the reply."""
+    notes = []
+    for src in pl.get("sources", []):
+        url = src["url"]
+        try:
+            fresh, title = await fetch_tracks(url, requester)
+        except Exception as e:
+            notes.append(f"Couldn't check **{src['title']}** for changes (`{e}`), so its saved songs play.")
+            continue
+        src["title"] = title or src["title"]  # follow a rename
+        old = [d for d in pl["tracks"] if d.get("source") == url]
+        old_by_key = {track_key(d): d for d in old}
+        skip = set(src.get("removed", []))
+        new = []
+        for t in fresh:
+            d = dict(track_to_dict(t), source=url)
+            if track_key(d) not in skip:
+                new.append(old_by_key.get(track_key(d), d))  # keep the saved copy of songs it already had
+        if [track_key(d) for d in new] == [track_key(d) for d in old]:
+            continue
+        added = sum(track_key(d) not in old_by_key for d in new)
+        new_keys = {track_key(d) for d in new}
+        removed = sum(k not in new_keys for k in old_by_key)
+        # The source's songs go where its first song was; songs added by hand keep their places around them.
+        first = next((i for i, d in enumerate(pl["tracks"]) if d.get("source") == url), len(pl["tracks"]))
+        before = [d for d in pl["tracks"][:first] if d.get("source") != url]
+        after = [d for d in pl["tracks"][first:] if d.get("source") != url]
+        pl["tracks"] = before + new + after
+        changes = [f"{songs(added)} added"] if added else []
+        changes += [f"{songs(removed)} removed"] if removed else []
+        notes.append(f"Updated from **{src['title']}**: {', '.join(changes) or 'new order'}.")
+    return notes
 
 
 class MusicBot(discord.Client):
@@ -985,15 +1037,33 @@ async def missing_playlist(interaction: discord.Interaction, name: str):
         await interaction.response.send_message(msg, ephemeral=True)
 
 
-@playlist_group.command(name="create", description="Create a new, empty playlist")
-@app_commands.describe(name="Playlist name")
-async def playlist_create(interaction: discord.Interaction, name: app_commands.Range[str, 1, 50]):
+@playlist_group.command(name="create", description="Create a playlist: empty, or a copy of a playlist link kept in sync")
+@app_commands.describe(name="Playlist name",
+                       link="Optional playlist link (YouTube, SoundCloud, Spotify, Apple Music): its songs, updated each play")
+async def playlist_create(interaction: discord.Interaction, name: app_commands.Range[str, 1, 50], link: str | None = None):
     name = name.strip()
     if playlists.get(interaction.guild_id, name):
         return await interaction.response.send_message(f"A playlist called **{name}** already exists.", ephemeral=True)
-    playlists.guild(interaction.guild_id)[name.lower()] = {"name": name, "owner_id": interaction.user.id, "tracks": []}
+    pl = {"name": name, "owner_id": interaction.user.id, "tracks": []}
+    if not link:
+        playlists.guild(interaction.guild_id)[name.lower()] = pl
+        playlists.save()
+        return await interaction.response.send_message(f"Created the playlist **{name}**. Add songs to it with `/playlist add`.")
+    if not is_link(link):
+        return await interaction.response.send_message("`link` has to be a playlist link (starting with https://).", ephemeral=True)
+    await interaction.response.defer()
+    try:
+        tracks, source = await fetch_tracks(link, interaction.user.display_name)
+    except Exception as e:
+        return await interaction.followup.send(f"Couldn't load that: `{e}`")
+    if not source:
+        return await interaction.followup.send("That's a single song, not a playlist. Create the playlist without a link, "
+                                               "then add songs with `/playlist add`.")
+    pl["tracks"] = add_source(pl, link, source, tracks)
+    playlists.guild(interaction.guild_id)[name.lower()] = pl
     playlists.save()
-    await interaction.response.send_message(f"Created the playlist **{name}**. Add songs to it with `/playlist add`.")
+    await interaction.followup.send(f"Created **{name}** with **{songs(len(pl['tracks']))}** from **{source}**. "
+                                    f"It picks up changes to **{source}** every time it's played.")
 
 
 @playlist_group.command(name="add", description="Add a song (or a YouTube playlist) to a saved playlist")
@@ -1016,13 +1086,18 @@ async def playlist_add(interaction: discord.Interaction, name: str, song: str | 
         except Exception as e:
             return await interaction.followup.send(f"Couldn't load that: `{e}`")
 
-    room = MAX_SAVED_TRACKS - len(pl["tracks"])
-    if room <= 0:
-        return await interaction.followup.send(f"**{pl['name']}** is full (it can hold {MAX_SAVED_TRACKS} songs).")
-    tracks = tracks[:room]
-    pl["tracks"].extend(track_to_dict(t) for t in tracks)
+    synced = bool(source and song and is_link(song))  # a playlist link: keep these songs in sync with it
+    if synced and any(s["url"] == song.strip() for s in pl.get("sources", [])):
+        notes = await refresh_from_sources(pl, interaction.user.display_name)
+        playlists.save()
+        return await interaction.followup.send(f"**{pl['name']}** already follows **{source}**; it updates every time "
+                                               f"it's played. {' '.join(notes) or 'No changes right now.'}")
+    pl["tracks"].extend(add_source(pl, song, source, tracks) if synced else (track_to_dict(t) for t in tracks))
     playlists.save()
-    if source or len(tracks) > 1:
+    if synced:
+        await interaction.followup.send(f"Added **{songs(len(tracks))}** from **{source}** to **{pl['name']}** (now "
+                                        f"{songs(len(pl['tracks']))}). They update with **{source}** every time it's played.")
+    elif source or len(tracks) > 1:
         await interaction.followup.send(f"Added **{songs(len(tracks))}** to **{pl['name']}**. It now has {songs(len(pl['tracks']))}.")
     else:
         await interaction.followup.send(f"Added **{tracks[0].title}** to **{pl['name']}** at position {len(pl['tracks'])}.")
@@ -1042,6 +1117,9 @@ async def playlist_remove(interaction: discord.Interaction, name: str, position:
             f"**{pl['name']}** has {songs(len(pl['tracks']))}. Pick a number from 1 to {len(pl['tracks'])}.", ephemeral=True
         )
     removed = pl["tracks"].pop(position - 1)
+    for src in pl.get("sources", []):  # came from a playlist link: don't bring it back on the next update
+        if src["url"] == removed.get("source"):
+            src.setdefault("removed", []).append(track_key(removed))
     playlists.save()
     await interaction.response.send_message(f"Removed **{removed['title']}** from **{pl['name']}**.")
 
@@ -1053,16 +1131,19 @@ async def playlist_play(interaction: discord.Interaction, name: str, shuffle: bo
     pl = playlists.get(interaction.guild_id, name)
     if not pl:
         return await missing_playlist(interaction, name)
-    if not pl["tracks"]:
+    if not pl["tracks"] and not pl.get("sources"):
         return await interaction.response.send_message(f"**{pl['name']}** is empty. Add songs to it with `/playlist add`.", ephemeral=True)
     await interaction.response.defer()
     vc = await ensure_voice(interaction)
     if vc is None:
         return
+    for note in await refresh_from_sources(pl, interaction.user.display_name):
+        await interaction.followup.send(note)
+    playlists.save()
+    if not pl["tracks"]:
+        return await interaction.followup.send(f"**{pl['name']}** is empty now.")
     tracks = [track_from_dict(d, interaction.user.display_name) for d in pl["tracks"]]
-    if shuffle:
-        random.shuffle(tracks)
-    await enqueue(interaction.guild, interaction.followup.send, tracks, pl["name"], interaction.channel)
+    await enqueue(interaction.guild, interaction.followup.send, tracks, pl["name"], interaction.channel, shuffle)
 
 
 @playlist_group.command(name="show", description="Show the songs in a saved playlist")
@@ -1074,6 +1155,7 @@ async def playlist_show(interaction: discord.Interaction, name: str):
         return await missing_playlist(interaction, name)
     tracks = [track_from_dict(d, "") for d in pl["tracks"]]
     lines = [f"**{pl['name']}**: {songs(len(tracks))}, made by <@{pl['owner_id']}>"]
+    lines += [f"Follows [{s['title']}](<{s['url']}>): updated every time it's played" for s in pl.get("sources", [])]
     lines += [f"`{i}.` {t.title[:70]} ({t.length})" for i, t in enumerate(tracks[:20], 1)]  # stay under Discord's 2000 chars
     if len(tracks) > 20:
         lines.append(f"...and {len(tracks) - 20} more.")
