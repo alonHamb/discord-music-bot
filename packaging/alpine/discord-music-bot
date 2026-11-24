@@ -62,7 +62,7 @@ case "${1:-help}" in
                echo "Started, and starts on boot." ;;
     update-ytdlp)
         need_root update-ytdlp
-        "$APP/venv/bin/python" -m pip install -q --upgrade "yt-dlp[default]"
+        "$APP/venv/bin/python" -m pip install -q --upgrade "yt-dlp[default]>=2025.11.12"
         rc-service "$SERVICE" restart >/dev/null
         echo "yt-dlp is now $("$APP/venv/bin/python" -m yt_dlp --version); bot restarted."
         ;;

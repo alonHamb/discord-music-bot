@@ -69,22 +69,30 @@ step "setting up the Python environment (downloads packages; can take a few minu
 [ -x "$APP/venv/bin/python" ] || quiet python3 -m venv "$APP/venv"
 quiet "$APP/venv/bin/python" -m pip install --upgrade pip
 pip_install() { SODIUM_INSTALL=system "$APP/venv/bin/python" -m pip install --upgrade "$@" >>"$INSTALL_LOG" 2>&1; }
-# Prebuilt packages first. Some have none for every Alpine CPU type (e.g. 32-bit x86): then compile them with
-# temporary build tools. curl-cffi (optional, only helps some sites) can't be compiled: leave it out if it has none.
+# curl-cffi (optional, only helps some sites) has no build for every CPU (e.g. 32-bit x86) and can't be compiled
+# here: check first, and leave it out where there's none.
 reqs="$APP/requirements.txt"
+rm -rf /tmp/dmb-cffi-check
+if ! "$APP/venv/bin/python" -m pip download -q --only-binary=:all: --no-deps -d /tmp/dmb-cffi-check curl-cffi \
+        >>"$INSTALL_LOG" 2>&1; then
+    sed 's/yt-dlp\[default,curl-cffi\]/yt-dlp[default]/' "$APP/requirements.txt" >"$APP/requirements-nocffi.txt"
+    reqs="$APP/requirements-nocffi.txt"
+    step "(curl-cffi isn't available for this CPU; the bot works without it)"
+fi
+rm -rf /tmp/dmb-cffi-check
+# Prebuilt packages first. Some have none for every Alpine CPU type (e.g. 32-bit x86): then compile them with
+# temporary build tools.
 if ! pip_install --only-binary=:all: -r "$reqs"; then
     step "compiling some Python packages for this CPU (can take 10+ minutes on a slow machine)"
     quiet apk add -t .discord-music-bot-build build-base python3-dev libffi-dev libsodium-dev
-    if ! pip_install -r "$reqs"; then
-        sed 's/yt-dlp\[default,curl-cffi\]/yt-dlp[default]/' "$reqs" >"$APP/requirements-nocffi.txt"
-        pip_install -r "$APP/requirements-nocffi.txt" || {
-            apk del -q .discord-music-bot-build >/dev/null 2>&1 || true
-            tail -n 30 "$INSTALL_LOG"; step "FAILED installing the Python packages (full output: $INSTALL_LOG)"; exit 1
-        }
-        step "(curl-cffi isn't available here; the bot works without it)"
-    fi
+    pip_install -r "$reqs" || {
+        apk del -q .discord-music-bot-build >/dev/null 2>&1 || true
+        tail -n 30 "$INSTALL_LOG"; step "FAILED installing the Python packages (full output: $INSTALL_LOG)"; exit 1
+    }
     apk del -q .discord-music-bot-build >/dev/null 2>&1 || true
 fi
+yt_ver=$("$APP/venv/bin/python" -m yt_dlp --version)
+step "yt-dlp $yt_ver"
 
 step "checking the bot loads"
 quiet sh -c "cd '$APP' && '$APP/venv/bin/python' -c 'import bot'"
