@@ -1,0 +1,89 @@
+#!/bin/sh
+# Manage the Discord music bot service (Alpine Linux / OpenRC).
+set -e
+
+SERVICE=discord-music-bot
+ENV_FILE=/etc/discord-music-bot/bot.env
+APP=/opt/discord-music-bot
+LOG=/var/log/discord-music-bot/bot.log
+
+need_root() {
+    [ "$(id -u)" -eq 0 ] || { echo "Run this as root (or with doas/sudo):  discord-music-bot $1"; exit 1; }
+}
+
+set_setting() {  # set_setting KEY VALUE: replace the KEY= line in the settings file
+    tmp=$(mktemp)
+    grep -v "^$1=" "$ENV_FILE" >"$tmp" || true
+    printf '%s=%s\n' "$1" "$2" >>"$tmp"
+    cat "$tmp" >"$ENV_FILE"  # keeps the file's root-only permissions
+    rm -f "$tmp"
+}
+
+case "${1:-help}" in
+    token)
+        need_root token
+        echo "Get the token from https://discord.com/developers/applications -> your app -> Bot -> Reset Token."
+        printf "Paste the bot token (hidden while typing): "
+        stty -echo 2>/dev/null || true; read -r token; stty echo 2>/dev/null || true; echo
+        token=$(printf '%s' "$token" | tr -d '[:cntrl:][:space:]')  # stray paste characters (Ctrl codes, CR)
+        if ! printf '%s' "$token" | grep -Eq '^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}$'; then
+            echo "That doesn't look like one bot token (${#token} characters; a token is about 70, with two dots)."
+            echo "Paste it only once. Nothing changed."
+            exit 1
+        fi
+        set_setting DISCORD_TOKEN "$token"
+        rc-update add "$SERVICE" default >/dev/null 2>&1 || true
+        before=$( [ -f "$LOG" ] && wc -l <"$LOG" || echo 0 )
+        rc-service "$SERVICE" restart >/dev/null 2>&1 || rc-service "$SERVICE" start >/dev/null
+        echo "Saved. Starting the bot (usually a few seconds, up to a minute)..."
+        for _ in $(seq 1 90); do
+            log=$(tail -n "+$((before + 1))" "$LOG" 2>/dev/null || true)
+            if echo "$log" | grep -q "Logged in as"; then
+                echo "$log" | grep "Logged in as" | tail -n 1
+                echo "The bot is running and starts automatically on boot."
+                exit 0
+            fi
+            if echo "$log" | grep -qE "LoginFailure|Improper token"; then
+                echo "Discord rejected that token. Run  discord-music-bot token  again with the right one."
+                exit 1
+            fi
+            sleep 1
+        done
+        echo "It hasn't logged in yet. Check:  discord-music-bot logs"
+        ;;
+    logs)      need_root logs; exec tail -n 50 -F "$LOG" ;;
+    status)    exec rc-service "$SERVICE" status ;;
+    restart)   need_root restart; rc-service "$SERVICE" restart >/dev/null; echo "Restarted." ;;
+    stop)      need_root stop; rc-service "$SERVICE" stop >/dev/null; echo "Stopped (it starts again on boot; use 'disable' to prevent that)." ;;
+    start)     need_root start; rc-service "$SERVICE" start >/dev/null; echo "Started." ;;
+    disable)   need_root disable; rc-service "$SERVICE" stop >/dev/null 2>&1 || true; rc-update del "$SERVICE" default >/dev/null 2>&1 || true
+               echo "Stopped and won't start on boot." ;;
+    enable)    need_root enable; rc-update add "$SERVICE" default >/dev/null; rc-service "$SERVICE" start >/dev/null 2>&1 || true
+               echo "Started, and starts on boot." ;;
+    update-ytdlp)
+        need_root update-ytdlp
+        "$APP/venv/bin/python" -m pip install -q --upgrade "yt-dlp[default]"
+        rc-service "$SERVICE" restart >/dev/null
+        echo "yt-dlp is now $("$APP/venv/bin/python" -m yt_dlp --version); bot restarted."
+        ;;
+    uninstall) need_root uninstall; exec "$APP/uninstall.sh" "${2:-}" ;;
+    version)   cat "$APP/VERSION"; echo ;;
+    *)
+        cat <<EOF
+Usage: discord-music-bot <command>   (as root)
+
+  token          set the bot token, then start the bot
+  logs           follow the bot's live log (Ctrl+C to quit)
+  status         show whether the bot is running
+  restart        restart the bot
+  stop | start   stop or start the bot
+  disable        stop the bot and don't start it on boot
+  enable         start the bot and start it on boot
+  update-ytdlp   update yt-dlp (try this if songs stop loading), then restart
+  uninstall      remove the bot (keeps token and playlists; 'uninstall --purge' deletes them too)
+  version        show the installed version
+
+Settings: $ENV_FILE    Playlists: /var/lib/discord-music-bot/playlists.json    Log: $LOG
+EOF
+        ;;
+esac

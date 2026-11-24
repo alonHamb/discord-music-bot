@@ -56,7 +56,8 @@ After changing the code, build new installers with `build.ps1` (PowerShell, in t
 .\build.ps1 windows-portable 1.0.1   # Windows portable zip (no installer)
 .\build.ps1 linux 1.0.1              # Linux .deb
 .\build.ps1 linux-portable 1.0.1     # Linux portable .tar.gz (no package)
-.\build.ps1 all 1.0.1                # all four
+.\build.ps1 alpine 1.0.1             # Alpine Linux .tar.gz (run ./install.sh as root)
+.\build.ps1 all 1.0.1                # all five
 ```
 
 They land in `dist/`. Always use a **higher version** than what's installed, or the upgrade does nothing; the
@@ -145,6 +146,25 @@ don't start with `/` are left alone.
 - With **View Audit Log** it also knows who renamed it, so `/play` can join that person's voice channel. Without
   it, `/play` only works while the bot is already in voice.
 - Nicknames are at most 32 characters, so `/play` takes short searches, not long links.
+
+## Install on Alpine Linux
+
+Build `dist/discord-music-bot-<version>-alpine.tar.gz` with `.\build.ps1 alpine` (releases include it), copy it to
+the Alpine machine, then as root:
+
+```
+tar -xzf discord-music-bot-<version>-alpine.tar.gz
+cd discord-music-bot-<version>-alpine
+./install.sh
+discord-music-bot token
+```
+
+`install.sh` installs Python, FFmpeg and a JavaScript runtime with apk (Deno where Alpine has it, otherwise
+Node.js, e.g. on 32-bit x86), enabling the community repository if needed, and runs the bot as the OpenRC service
+`discord-music-bot` (starts on boot, restarts if it crashes). Where some Python packages have no prebuilt version
+for the CPU, it compiles them with temporary build tools. Upgrade by running a newer version's `install.sh` (token
+and playlists are kept). `discord-music-bot` lists the other commands; the log is
+`/var/log/discord-music-bot/bot.log`.
 
 ## Install as a package (Debian, Ubuntu, Raspberry Pi OS 64-bit)
 

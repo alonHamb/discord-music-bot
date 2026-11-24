@@ -8,8 +8,9 @@ Build installers for the Discord music bot into the dist folder.
 .\build.ps1 windows-portable 1.0.1   # Windows portable zip only (no installer: unzip, run start.cmd)
 .\build.ps1 linux 1.0.1              # Linux .deb only
 .\build.ps1 linux-portable 1.0.1     # Linux portable .tar.gz only (no package: extract, run ./start.sh)
-.\build.ps1 all 1.0.1                # all four
-.\build.ps1 all 1.0.1 -Yes           # all four, and delete older installers without asking
+.\build.ps1 alpine 1.0.1             # Alpine Linux .tar.gz only (extract, run ./install.sh as root)
+.\build.ps1 all 1.0.1                # all five
+.\build.ps1 all 1.0.1 -Yes           # all five, and delete older installers without asking
 
 Every .py file in this folder plus requirements.txt goes into the installers. Building a version that's already in
 dist overwrites it; after a successful build, older versions' installers (for the platforms just built) are deleted
@@ -17,7 +18,7 @@ once you confirm. The Windows build needs Inno Setup (winget install JRSoftware.
 WSL with Debian or Ubuntu.
 #>
 param(
-    [ValidateSet('windows', 'windows-portable', 'linux', 'linux-portable', 'all')] [string]$Target,
+    [ValidateSet('windows', 'windows-portable', 'linux', 'linux-portable', 'alpine', 'all')] [string]$Target,
     [string]$Version,
     [string]$WslDistro = 'Debian',
     [switch]$Yes  # delete older installers without asking
@@ -32,10 +33,11 @@ function Fail($msg) { Write-Host "Error: $msg" -ForegroundColor Red; exit 1 }
 # --- What to build ---------------------------------------------------------------------------------------------
 if (-not $Target) {
     Write-Host ("Which installer do you want to build?`n  1) Windows (Setup.exe)`n  2) Windows portable (zip, no installer)`n" +
-                "  3) Linux (.deb for Debian/Ubuntu/Raspberry Pi OS)`n  4) Linux portable (.tar.gz, no package)`n  5) All four")
-    $Target = switch (Read-Host 'Choose 1-5') {
-        '1' { 'windows' } '2' { 'windows-portable' } '3' { 'linux' } '4' { 'linux-portable' } '5' { 'all' }
-        default { Fail 'Please choose 1, 2, 3, 4 or 5.' }
+                "  3) Linux (.deb for Debian/Ubuntu/Raspberry Pi OS)`n  4) Linux portable (.tar.gz, no package)`n" +
+                "  5) Alpine Linux (.tar.gz with install.sh)`n  6) All five")
+    $Target = switch (Read-Host 'Choose 1-6') {
+        '1' { 'windows' } '2' { 'windows-portable' } '3' { 'linux' } '4' { 'linux-portable' } '5' { 'alpine' } '6' { 'all' }
+        default { Fail 'Please choose 1, 2, 3, 4, 5 or 6.' }
     }
 }
 
@@ -59,8 +61,9 @@ $installers = @{
     'windows-portable' = @{ Pattern = 'discord-music-bot-*-windows-portable.zip';  This = "discord-music-bot-$Version-windows-portable.zip" }
     'linux'            = @{ Pattern = 'discord-music-bot_*_all.deb';               This = "discord-music-bot_${Version}_all.deb" }
     'linux-portable'   = @{ Pattern = 'discord-music-bot-*-linux-portable.tar.gz'; This = "discord-music-bot-$Version-linux-portable.tar.gz" }
+    'alpine'           = @{ Pattern = 'discord-music-bot-*-alpine.tar.gz';         This = "discord-music-bot-$Version-alpine.tar.gz" }
 }
-$platforms = if ($Target -eq 'all') { 'windows', 'windows-portable', 'linux', 'linux-portable' } else { @($Target) }
+$platforms = if ($Target -eq 'all') { 'windows', 'windows-portable', 'linux', 'linux-portable', 'alpine' } else { @($Target) }
 $older = @(foreach ($p in $platforms) {
     Get-ChildItem $Dist -Filter $installers[$p].Pattern | Where-Object Name -ne $installers[$p].This
 })
@@ -148,11 +151,16 @@ function Build-LinuxPortable {
     Write-Host "`n==> Building the Linux portable .tar.gz $Version (in WSL $WslDistro)" -ForegroundColor Cyan
     Invoke-InWsl 'build-linux-portable.sh' 'Linux portable .tar.gz'
 }
+function Build-Alpine {
+    Write-Host "`n==> Building the Alpine Linux .tar.gz $Version (in WSL $WslDistro)" -ForegroundColor Cyan
+    Invoke-InWsl 'build-alpine.sh' 'Alpine Linux .tar.gz'
+}
 
 if ($Target -in 'windows', 'all') { Build-Windows }
 if ($Target -in 'windows-portable', 'all') { Build-WindowsPortable }
 if ($Target -in 'linux', 'all') { Build-Linux }
 if ($Target -in 'linux-portable', 'all') { Build-LinuxPortable }
+if ($Target -in 'alpine', 'all') { Build-Alpine }
 Set-Content -Path $VersionFile -Value $Version -NoNewline
 if ($deleteOlder) {  # only reached when every build succeeded (failures exit above)
     $older | Remove-Item -Force

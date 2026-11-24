@@ -1,0 +1,37 @@
+#!/sbin/openrc-run
+# OpenRC service for the Discord music bot (installed by install.sh).
+
+name="Discord music bot"
+description="Plays music in Discord voice channels"
+
+supervisor=supervise-daemon
+command=/opt/discord-music-bot/venv/bin/python
+command_args="/opt/discord-music-bot/bot.py"
+command_user="discord-music-bot:discord-music-bot"
+directory=/var/lib/discord-music-bot
+output_log=/var/log/discord-music-bot/bot.log
+error_log=/var/log/discord-music-bot/bot.log
+respawn_delay=10
+respawn_max=0
+
+ENV_FILE=/etc/discord-music-bot/bot.env
+
+depend() {
+    need net
+    after firewall dns
+}
+
+start_pre() {
+    # The token file is root-only; hand its settings to the bot as environment variables.
+    set -a
+    . "$ENV_FILE"
+    set +a
+    export PYTHONUNBUFFERED=1
+    export PLAYLISTS_FILE=/var/lib/discord-music-bot/playlists.json
+    export HOME=/var/lib/discord-music-bot
+    # Keep the log from growing forever: start a new one past 5 MB (the previous one is kept as bot.log.old).
+    if [ -f "$output_log" ] && [ "$(wc -c <"$output_log")" -gt 5000000 ]; then
+        mv -f "$output_log" "$output_log.old"
+    fi
+    checkpath -f -o discord-music-bot:discord-music-bot -m 640 "$output_log"
+}

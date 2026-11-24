@@ -5,6 +5,7 @@
 # Linux scripts and package files break with Windows line endings,
 *.sh text eol=lf
 packaging/deb/** text eol=lf
+packaging/alpine/** text eol=lf
 portable/linux/** text eol=lf
 # and Windows batch files can misbehave with Unix ones.
 *.cmd text eol=crlf
