@@ -24,7 +24,12 @@ case "${1:-help}" in
         echo "Get the token from https://discord.com/developers/applications -> your app -> Bot -> Reset Token."
         printf "Paste the bot token (hidden while typing): "
         stty -echo 2>/dev/null || true; read -r token; stty echo 2>/dev/null || true; echo
-        [ "${#token}" -ge 50 ] || { echo "That doesn't look like a bot token (too short). Nothing changed."; exit 1; }
+        token=$(printf '%s' "$token" | tr -d '[:cntrl:][:space:]')  # stray paste characters (Ctrl codes, CR)
+        if ! printf '%s' "$token" | grep -Eq '^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}$'; then
+            echo "That doesn't look like one bot token (${#token} characters; a token is about 70, with two dots)."
+            echo "Paste it only once. Nothing changed."
+            exit 1
+        fi
         set_setting DISCORD_TOKEN "$token"
         systemctl enable "$SERVICE" >/dev/null 2>&1
         started_at=$(date '+%Y-%m-%d %H:%M:%S')
