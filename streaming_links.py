@@ -11,7 +11,8 @@ from dataclasses import dataclass
 
 import aiohttp
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"}
 TIMEOUT = aiohttp.ClientTimeout(total=20)
 
 SPOTIFY_RE = re.compile(r"open\.spotify\.com/(?:intl-[a-z-]+/)?(track|album|playlist|artist)/([A-Za-z0-9]+)")
@@ -65,7 +66,8 @@ async def _spotify(session, kind: str, item_id: str) -> tuple[list[LinkedSong], 
 
     if kind == "track":
         artist = ", ".join(a["name"] for a in entity.get("artists") or [])
-        return [LinkedSong(entity["name"], artist, _secs(entity.get("duration")), f"https://open.spotify.com/track/{item_id}")], None
+        return [LinkedSong(entity["name"], artist, _secs(entity.get("duration")),
+                           f"https://open.spotify.com/track/{item_id}")], None
 
     songs = [
         LinkedSong(
@@ -94,7 +96,8 @@ async def _itunes_lookup(session, country: str, ids: list[str], entity: str | No
 
 
 def _apple_song(d: dict) -> LinkedSong:
-    return LinkedSong(d["trackName"], d.get("artistName", ""), _secs(d.get("trackTimeMillis")), d.get("trackViewUrl", "").split("&uo=")[0])
+    return LinkedSong(d["trackName"], d.get("artistName", ""), _secs(d.get("trackTimeMillis")),
+                      d.get("trackViewUrl", "").split("&uo=")[0])
 
 
 async def _apple(session, url: str, country: str, kind: str, item_id: str) -> tuple[list[LinkedSong], str | None]:
