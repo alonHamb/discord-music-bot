@@ -690,6 +690,16 @@ async def join_voice(channel: discord.VoiceChannel | discord.StageChannel, send)
 @bot.tree.command(description="Play a song/playlist link (YouTube, SoundCloud, Spotify, Apple Music) or search by name")
 @app_commands.describe(query="Song/playlist link or search terms")
 async def play(interaction: discord.Interaction, query: str):
+    await play_request(interaction, query, shuffled=False)
+
+
+@bot.tree.command(description="Like /play, but shuffle the playlist/album's songs before they play")
+@app_commands.describe(query="Playlist/album link (a single song just plays)")
+async def shuffleplay(interaction: discord.Interaction, query: str):
+    await play_request(interaction, query, shuffled=True)
+
+
+async def play_request(interaction: discord.Interaction, query: str, shuffled: bool):
     await interaction.response.defer()
     vc = await ensure_voice(interaction)
     if vc is None:
@@ -699,13 +709,15 @@ async def play(interaction: discord.Interaction, query: str):
     except Exception as e:
         await interaction.followup.send(f"Couldn't load that: `{e}`")
         return
-    await enqueue(interaction.guild, interaction.followup.send, tracks, playlist, interaction.channel)
+    await enqueue(interaction.guild, interaction.followup.send, tracks, playlist, interaction.channel, shuffled)
 
 
 async def enqueue(guild: discord.Guild, send, tracks: list[Track], playlist: str | None,
-                  channel: discord.abc.Messageable | None):
+                  channel: discord.abc.Messageable | None, shuffled: bool = False):
     """Add tracks to the queue, start playing if idle, and report back with `send`.
-    Later songs are announced in `channel` as they start."""
+    Later songs are announced in `channel` as they start. `shuffled` shuffles the new tracks first."""
+    if shuffled:
+        tracks = random.sample(tracks, len(tracks))
     player = bot.player(guild.id)
     player.queue.extend(tracks)
     if channel:
@@ -719,7 +731,7 @@ async def enqueue(guild: discord.Guild, send, tracks: list[Track], playlist: str
 
     # Each thing gets its own message: what was added, then (if it's starting) the song now playing.
     if playlist:
-        await send(f"Added **{songs(len(tracks))}** from **{playlist}**.")
+        await send(f"Added **{songs(len(tracks))}** from **{playlist}**{', shuffled' if shuffled and len(tracks) > 1 else ''}.")
     elif not starting:
         await send(f"Queued **{tracks[0].title}** ({tracks[0].length}) at position {len(player.queue)}.")
     if starting and player.current:
@@ -1112,7 +1124,7 @@ async def show_help(interaction: discord.Interaction):
 # nickname back. Only people allowed to change the bot's nickname (Manage Nicknames, with a role above the bot's)
 # can do this. With View Audit Log the bot also knows who renamed it: needed for "/play" when it isn't in voice yet.
 NICK_PREFIX = "/"
-NICK_COMMANDS = "play <song>, skip, replay, pause, resume, stop, shuffle, loop <song|queue|off>, volume <0-200>, leave"
+NICK_COMMANDS = "play <song>, shuffleplay <playlist>, skip, replay, pause, resume, stop, shuffle, loop <song|queue|off>, volume <0-200>, leave"
 LOOP_WORDS = {"song": "track", "track": "track", "one": "track", "queue": "queue", "all": "queue", "off": "off"}
 home_nicks: dict[int, str | None] = {}  # per server: the bot's real nickname, to put back after a command
 
@@ -1187,9 +1199,9 @@ async def on_member_update(before: discord.Member, after: discord.Member):
                 return await send("What should I loop? Use `/loop song`, `/loop queue` or `/loop off`.")
             bot.player(guild.id).loop = mode
             await send(LOOP_LABELS[mode] + ".")
-        elif name == "play":
+        elif name in ("play", "shuffleplay"):
             if not arg:
-                return await send("What should I play? For example: `/play never gonna give you up`.")
+                return await send(f"What should I play? For example: `/{name} never gonna give you up`.")
             renamer_voice = getattr(renamer, "voice", None)
             channel_to_join = renamer_voice.channel if renamer_voice else (guild.voice_client.channel if guild.voice_client else None)
             if channel_to_join is None:
@@ -1200,7 +1212,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
                 tracks, playlist = await fetch_tracks(arg, renamer.display_name if renamer else "nickname")
             except Exception as e:
                 return await send(f"Couldn't load that: `{e}`")
-            await enqueue(guild, send, tracks, playlist, channel)
+            await enqueue(guild, send, tracks, playlist, channel, shuffled=name == "shuffleplay")
         else:
             await send(f"I don't know `{NICK_PREFIX}{name}`. Nickname commands: {NICK_COMMANDS}.")
     except Exception as e:

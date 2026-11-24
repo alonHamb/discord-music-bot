@@ -137,7 +137,7 @@ Commands. They also need to be able to see and write in the channel.
 ## Nickname commands
 
 Renaming the bot to a nickname that starts with `/` runs a command, then the bot puts its nickname back:
-`/play <song>`, `/skip`, `/replay`, `/pause`, `/resume`, `/stop`, `/shuffle`, `/loop song|queue|off`,
+`/play <song>`, `/shuffleplay <playlist>`, `/skip`, `/replay`, `/pause`, `/resume`, `/stop`, `/shuffle`, `/loop song|queue|off`,
 `/volume 0-200`, `/leave`. It answers in the voice channel's chat (or the server's main channel). Nicknames that
 don't start with `/` are left alone.
 
