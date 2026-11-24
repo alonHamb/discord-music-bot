@@ -48,6 +48,14 @@ def find_exe(name: str) -> str | None:
 
 FFMPEG = os.getenv("FFMPEG_PATH") or find_exe("ffmpeg")
 DENO = os.getenv("DENO_PATH") or find_exe("deno")
+# YouTube needs a JS runtime to unlock formats. Deno is preferred; Node.js stands in where Deno has no build
+# (e.g. 32-bit Alpine). yt-dlp only tries Deno unless told otherwise, so name the one we found.
+if DENO:
+    JS_RUNTIME = ("deno", DENO)
+elif node := os.getenv("NODE_BIN") or find_exe("node"):
+    JS_RUNTIME = ("node", node)
+else:
+    JS_RUNTIME = ("deno", None)
 
 MAX_PLAYLIST = 200  # most tracks one /play can add from a playlist
 
@@ -58,7 +66,7 @@ YDL_OPTIONS = {
     "quiet": True,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
-    "js_runtimes": {"deno": {"path": DENO}},  # YouTube needs a JS runtime to unlock formats
+    "js_runtimes": {JS_RUNTIME[0]: {"path": JS_RUNTIME[1]}},  # YouTube needs a JS runtime to unlock formats
 }
 
 
@@ -77,8 +85,8 @@ def open_stream(url: str, fast: bool = True) -> subprocess.Popen:
     silence ("Sleeping 4 seconds as required by the site"). That cuts the time to first audio from ~8 s to ~2 s.
     """
     cmd = [sys.executable, "-m", "yt_dlp", "-q", "--no-warnings", "--no-playlist", "-f", "bestaudio/best", "-o", "-"]
-    if DENO:
-        cmd += ["--js-runtimes", f"deno:{DENO}"]
+    if JS_RUNTIME[1]:
+        cmd += ["--js-runtimes", f"{JS_RUNTIME[0]}:{JS_RUNTIME[1]}"]
     if fast:
         cmd += ["--extractor-args", "youtube:player_client=default,-tv_samsung"]
     return subprocess.Popen(cmd + [url], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -604,7 +612,7 @@ async def restore_state():
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (id {bot.user.id})")
-    print(f"ffmpeg: {FFMPEG or 'NOT FOUND'} | deno: {DENO or 'NOT FOUND'}")
+    print(f"ffmpeg: {FFMPEG or 'NOT FOUND'} | JS runtime: {JS_RUNTIME[1] and ' '.join(JS_RUNTIME) or 'NOT FOUND'}")
     if not bot.restored:  # on_ready also runs after every reconnect: restore only once
         bot.restored = True
         await restore_state()
